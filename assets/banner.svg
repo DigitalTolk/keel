@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2720 800" role="img" aria-label="keel">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#123347"/>
+      <stop offset="1" stop-color="#0b2030"/>
+    </linearGradient>
+  </defs>
+
+  <!-- panel -->
+  <rect x="0" y="0" width="2720" height="800" rx="40" fill="url(#bg)"/>
+
+  <!-- faint depth lines -->
+  <g stroke="#a9cad9" stroke-width="2" opacity="0.06">
+    <line x1="70" y1="250" x2="2650" y2="250"/>
+    <line x1="70" y1="360" x2="2650" y2="360"/>
+    <line x1="70" y1="470" x2="2650" y2="470"/>
+    <line x1="70" y1="580" x2="2650" y2="580"/>
+    <line x1="70" y1="690" x2="2650" y2="690"/>
+  </g>
+
+  <!-- keel frames / ribs -->
+  <g stroke="#3fb6a8" stroke-width="12" stroke-linecap="round">
+    <line x1="236" y1="416" x2="214" y2="188"/>
+    <line x1="352" y1="413" x2="340" y2="184"/>
+    <line x1="468" y1="411" x2="460" y2="182"/>
+    <line x1="585" y1="410" x2="585" y2="180"/>
+    <line x1="702" y1="411" x2="711" y2="182"/>
+    <line x1="818" y1="413" x2="838" y2="184"/>
+    <line x1="928" y1="416" x2="948" y2="188"/>
+  </g>
+
+  <!-- hull reflection -->
+  <path d="M250 470 Q600 488 950 470" fill="none" stroke="#3fb6a8" stroke-width="4" opacity="0.25"/>
+
+  <!-- hull -->
+  <path d="M165 408 Q600 421 1035 408 Q600 477 165 408 Z" fill="#e0a83e"/>
+
+  <!-- waterline -->
+  <path d="M70 726 C 500 712 760 742 1180 724 C 1700 702 2200 742 2650 720"
+        fill="none" stroke="#3fb6a8" stroke-width="3" opacity="0.5"/>
+
+  <!-- wordmark -->
+  <text x="1760" y="500"
+        font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace"
+        font-size="300" letter-spacing="30" fill="#f4efe1">keel</text>
+</svg>
