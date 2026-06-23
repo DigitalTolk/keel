@@ -1,0 +1,9 @@
+.DS_Store
+*~
+/.idea/
+
+# build artifacts
+/keel
+/dist/
+/coverage.out
+/cover.out

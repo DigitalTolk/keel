@@ -1,0 +1,52 @@
+# GoReleaser configuration for keel.
+# Validate locally with:  goreleaser check
+# Snapshot build with:    goreleaser build --snapshot --clean
+version: 2
+
+project_name: keel
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: keel
+    main: ./cmd/keel
+    binary: keel
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/DigitalTolk/keel/internal/version.Version={{ .Version }}
+      - -X github.com/DigitalTolk/keel/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/DigitalTolk/keel/internal/version.Date={{ .Date }}
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
