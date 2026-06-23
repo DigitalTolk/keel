@@ -12,6 +12,12 @@ curl -fsSL https://raw.githubusercontent.com/DigitalTolk/keel/main/install.sh | 
 
 Picks the right build for your OS/arch (Linux & macOS, amd64 & arm64), verifies its checksum against the GitHub release, and installs `keel` to `/usr/local/bin` (or `~/.local/bin` without root). Pin a version with `KEEL_VERSION=v1.2.0`.
 
+Or with Homebrew (macOS & Linux):
+
+```sh
+brew install DigitalTolk/tools/keel
+```
+
 Or, with a Go toolchain:
 
 ```sh

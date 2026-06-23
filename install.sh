@@ -33,15 +33,15 @@ sha256_of() {
 }
 
 # --- detect platform ---------------------------------------------------------
-os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+os="$(uname -s)"   # Darwin or Linux
 case "${os}" in
-  linux|darwin) ;;
+  Linux|Darwin) ;;
   *) die "unsupported OS: ${os}" ;;
 esac
 
 arch="$(uname -m)"
 case "${arch}" in
-  x86_64|amd64) arch="amd64" ;;
+  x86_64|amd64) arch="x86_64" ;;
   aarch64|arm64) arch="arm64" ;;
   *) die "unsupported arch: ${arch}" ;;
 esac
@@ -54,14 +54,13 @@ if [ -z "${tag}" ]; then
     | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
   [ -n "${tag}" ] || die "could not resolve latest release; set KEEL_VERSION (e.g. v1.2.0)"
 fi
-version="${tag#v}"   # GoReleaser strips the leading v in asset names
 log "installing keel ${tag} (${os}/${arch})"
 
 # --- download + verify -------------------------------------------------------
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
 
-asset="keel_${version}_${os}_${arch}.tar.gz"
+asset="keel_${os}_${arch}.tar.gz"
 base="https://github.com/${OWNER}/${REPO}/releases/download/${tag}"
 
 curl -fsSL "${base}/${asset}"      -o "${tmp}/${asset}"      || die "download ${asset} failed"
