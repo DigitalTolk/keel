@@ -74,7 +74,9 @@ var (
 	styAccent = lipgloss.NewStyle().Foreground(tuiAccent)
 )
 
-const logWindowHeight = 14
+// stepOutputMax caps how many output lines are shown per step (live and when
+// committed to scrollback), so a chatty command never floods the screen.
+const stepOutputMax = 8
 
 // bootstrapModel is the guided TUI: a single-screen form that, on submit,
 // transitions in place to a live, scrolling provisioning log.
@@ -93,17 +95,23 @@ type bootstrapModel struct {
 	order    []focusable
 	focus    int
 	width    int
+	height   int
 	errMsg   string
 
 	canceled bool
 	params   bootstrapParams
 
-	// provisioning phase
+	// provisioning phase. One box holds every step: completed steps are frozen
+	// into `committed`, and the current step streams below it with its output
+	// capped to stepOutputMax (so only the running command's output scrolls).
 	provisioning bool
 	finished     bool
 	runErr       error
 	spinner      spinner.Model
-	logs         []provisionLogMsg
+	committed    []provisionLogMsg // all finished step lines (headers + ≤8 output each)
+	stepActive   bool              // a step is currently streaming
+	curHeader    provisionLogMsg   // the current step's header line
+	curOut       []provisionLogMsg // the current step's output, capped to stepOutputMax
 	ch           <-chan tea.Msg
 
 	// start kicks off provisioning and returns the message channel. Injected so
@@ -246,9 +254,18 @@ func (m *bootstrapModel) submit() tea.Cmd {
 	return tea.Batch(waitForActivity(m.ch), m.spinner.Tick)
 }
 
-func (m bootstrapModel) Init() tea.Cmd { return textinput.Blink }
+func (m bootstrapModel) Init() tea.Cmd {
+	// The whole TUI (form and provisioning) runs in the alt-screen, so it draws
+	// in place and leaves the terminal clean on exit.
+	return tea.Batch(tea.EnterAltScreen, textinput.Blink)
+}
 
 func (m bootstrapModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width, m.height = ws.Width, ws.Height
+		m.resize()
+		return m, nil
+	}
 	if m.provisioning {
 		return m.updateProvisioning(msg)
 	}
@@ -257,10 +274,6 @@ func (m bootstrapModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m bootstrapModel) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.resize()
-		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "esc", "ctrl+c":
@@ -316,9 +329,19 @@ func (m bootstrapModel) routeToField(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m bootstrapModel) updateProvisioning(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case provisionLogMsg:
-		m.logs = append(m.logs, msg)
+		if msg.header {
+			m.freezeStep() // freeze the finished step into the box, then start this one
+			m.stepActive = true
+			m.curHeader = msg
+			return m, waitForActivity(m.ch)
+		}
+		m.curOut = append(m.curOut, msg)
+		if len(m.curOut) > stepOutputMax {
+			m.curOut = m.curOut[len(m.curOut)-stepOutputMax:]
+		}
 		return m, waitForActivity(m.ch)
 	case provisionDoneMsg:
+		m.freezeStep()
 		m.finished = true
 		m.runErr = msg.err
 		return m, nil
@@ -401,6 +424,29 @@ func (m bootstrapModel) divider() string {
 	return styHint.Render(strings.Repeat("─", m.contentWidth()))
 }
 
+// freezeStep moves the current step (its header + ≤8 output) into the committed
+// list, so it stays in the box while the next step takes over the live output.
+func (m *bootstrapModel) freezeStep() {
+	if !m.stepActive {
+		return
+	}
+	m.committed = append(m.committed, m.curHeader)
+	m.committed = append(m.committed, m.curOut...)
+	m.stepActive = false
+	m.curHeader, m.curOut = provisionLogMsg{}, nil
+}
+
+// provisionLines is everything shown in the box: all frozen step lines plus the
+// current step's header and its (capped) live output.
+func (m bootstrapModel) provisionLines() []provisionLogMsg {
+	lines := append([]provisionLogMsg{}, m.committed...)
+	if m.stepActive {
+		lines = append(lines, m.curHeader)
+		lines = append(lines, m.curOut...)
+	}
+	return lines
+}
+
 func (m bootstrapModel) viewForm() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n %s  %s\n", styTitle.Render("keel bootstrap"), styHint.Render("· prepare hosts for Ansible"))
@@ -449,39 +495,37 @@ func (m bootstrapModel) button() string {
 	return base.Foreground(tuiAccent).Render("[ Bootstrap ]")
 }
 
+// viewProvisioning renders the single provisioning box (every step, with each
+// command's output capped) plus a status line below it.
 func (m bootstrapModel) viewProvisioning() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n %s\n\n", styTitle.Render("keel bootstrap — provisioning"))
 
-	// Docker-style: a fixed-height window tailing the most recent log lines.
-	// Each line is clamped to the window width so long output never wraps.
+	// One box holding every step (headers always kept; each command's output
+	// capped to ≤8 lines), clamped to a uniform width so nothing wraps.
 	w := m.contentWidth()
 	cell := lipgloss.NewStyle().Width(w)
-	tail := m.logs
-	if len(tail) > logWindowHeight {
-		tail = tail[len(tail)-logWindowHeight:]
+	var lines []string
+	for _, l := range m.provisionLines() {
+		lines = append(lines, cell.Render(renderLog(l, w)))
 	}
-	rendered := make([]string, 0, logWindowHeight)
-	for _, msg := range tail {
-		rendered = append(rendered, cell.Render(renderLog(msg, w)))
-	}
-	for len(rendered) < logWindowHeight {
-		rendered = append(rendered, cell.Render(""))
+	if len(lines) == 0 {
+		lines = []string{cell.Render("")}
 	}
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(tuiHint).
 		Padding(0, 1).
-		Render(strings.Join(rendered, "\n"))
+		Render(strings.Join(lines, "\n"))
 	fmt.Fprintf(&b, "%s\n\n", box)
 
 	switch {
 	case !m.finished:
-		fmt.Fprintf(&b, "  %s%s\n", m.spinner.View(), styHelp.Render("working…"))
+		fmt.Fprintf(&b, " %s%s\n", m.spinner.View(), styHelp.Render("working…"))
 	case m.runErr != nil:
-		fmt.Fprintf(&b, "  %s\n\n%s\n", styErr.Render("✗ "+m.runErr.Error()), styHelp.Render("press any key to close"))
+		fmt.Fprintf(&b, " %s\n\n %s\n", styErr.Render("✗ "+m.runErr.Error()), styHelp.Render("press any key to close"))
 	default:
-		fmt.Fprintf(&b, "  %s\n\n%s\n", styOK.Render("✓ all hosts bootstrapped"), styHelp.Render("press any key to close"))
+		fmt.Fprintf(&b, " %s\n\n %s\n", styOK.Render("✓ all hosts bootstrapped"), styHelp.Render("press any key to close"))
 	}
 	return b.String()
 }
@@ -495,7 +539,7 @@ func runBootstrapTUI(a *app, seed bootstrapParams) error {
 	model := newBootstrapModel(f, func(p bootstrapParams) <-chan tea.Msg {
 		return provisionStream(a, p)
 	})
-	out, err := tea.NewProgram(model, tea.WithAltScreen()).Run()
+	out, err := tea.NewProgram(model).Run() // alt-screen is toggled by the model
 	if err != nil {
 		return err
 	}

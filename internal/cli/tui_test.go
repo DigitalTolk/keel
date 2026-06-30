@@ -255,21 +255,53 @@ func TestModelProvisioningReducer(t *testing.T) {
 	m := newBootstrapModel(bootstrapFields{hosts: "web1"}, nil)
 	m.provisioning = true
 	m.ch = make(chan tea.Msg)
-	m = step(m, provisionLogMsg{"web1", "installing base packages", true})  // header
-	m = step(m, provisionLogMsg{"web1", "Reading package lists...", false}) // raw output
-	if len(m.logs) != 2 {
-		t.Fatalf("expected 2 log lines, got %d", len(m.logs))
+
+	// A header starts a step; output lines accumulate under it.
+	m = step(m, provisionLogMsg{"web1", "installing base packages", true})
+	m = step(m, provisionLogMsg{"web1", "Reading package lists...", false})
+	if !m.stepActive || m.curHeader.line != "installing base packages" || len(m.curOut) != 1 {
+		t.Fatalf("step state wrong: active=%v header=%q out=%d", m.stepActive, m.curHeader.line, len(m.curOut))
 	}
+
+	// A new header freezes the previous step into the box and starts a new one.
+	m = step(m, provisionLogMsg{"web1", "writing sudoers drop-in", true})
+	if m.curHeader.line != "writing sudoers drop-in" || len(m.curOut) != 0 {
+		t.Errorf("new step should reset output, got header=%q out=%d", m.curHeader.line, len(m.curOut))
+	}
+	if len(m.committed) != 2 { // previous header + its 1 output line
+		t.Errorf("previous step should be frozen into the box, committed=%d", len(m.committed))
+	}
+
 	m = step(m, spinner.TickMsg{}) // not-finished tick branch
 	m = step(m, provisionDoneMsg{})
-	if !m.finished || m.runErr != nil {
-		t.Errorf("clean done expected, finished=%v err=%v", m.finished, m.runErr)
+	if !m.finished || m.runErr != nil || m.stepActive {
+		t.Errorf("clean done expected, finished=%v err=%v active=%v", m.finished, m.runErr, m.stepActive)
+	}
+	if len(m.committed) != 3 { // + the final step's header
+		t.Errorf("final step should be frozen on done, committed=%d", len(m.committed))
 	}
 	m = step(m, spinner.TickMsg{}) // finished tick branch (no-op)
-	// Any key after completion quits.
-	_, cmd := m.Update(key("enter"))
-	if cmd == nil {
+	if _, cmd := m.Update(key("enter")); cmd == nil {
 		t.Error("a key after completion should quit")
+	}
+}
+
+// TestModelStepOutputCapped verifies each step keeps at most stepOutputMax output
+// lines (the live, scrolling window), regardless of how much the command prints.
+func TestModelStepOutputCapped(t *testing.T) {
+	m := newBootstrapModel(bootstrapFields{hosts: "web1"}, nil)
+	m.provisioning = true
+	m.ch = make(chan tea.Msg)
+	m = step(m, provisionLogMsg{"web1", "installing base packages", true})
+	for i := 0; i < 50; i++ {
+		m = step(m, provisionLogMsg{"web1", "apt line", false})
+	}
+	if len(m.curOut) != stepOutputMax {
+		t.Errorf("step output should be capped at %d, got %d", stepOutputMax, len(m.curOut))
+	}
+	// The current step contributes the header + at most stepOutputMax output lines.
+	if got := len(m.provisionLines()); got != stepOutputMax+1 {
+		t.Errorf("provisionLines = %d, want %d (header + %d output)", got, stepOutputMax+1, stepOutputMax)
 	}
 }
 
@@ -307,8 +339,9 @@ func TestModelWindowSizeAndViews(t *testing.T) {
 		t.Error("form view with focused button should render")
 	}
 	m.provisioning = true
-	m.logs = []provisionLogMsg{
-		{"web1", "ready ✓", true},
+	m.stepActive = true
+	m.curHeader = provisionLogMsg{"web1", "installing base packages", true}
+	m.curOut = []provisionLogMsg{
 		{"web1", strings.Repeat("very-long-output-line ", 30), false}, // exercises truncation
 	}
 	if m.viewProvisioning() == "" {
@@ -363,6 +396,35 @@ func TestModelResizeClampsNarrowWidth(t *testing.T) {
 	m = step(m, tea.WindowSizeMsg{Width: 10, Height: 5}) // narrower than the min field width
 	if m.hosts.Width < 20 {
 		t.Errorf("field width should clamp to a minimum, got %d", m.hosts.Width)
+	}
+}
+
+// TestProvisioningBoxKeepsAllSteps verifies the single box keeps every step's
+// header (and its output) — earlier steps are never dropped — while a chatty
+// command's output stays capped.
+func TestProvisioningBoxKeepsAllSteps(t *testing.T) {
+	m := newBootstrapModel(bootstrapFields{hosts: "web1"}, nil)
+	m = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m.provisioning = true
+	m.ch = make(chan tea.Msg)
+
+	m = step(m, provisionLogMsg{"web1", "installing base packages", true})
+	for i := 0; i < 50; i++ { // a chatty command
+		m = step(m, provisionLogMsg{"web1", "apt output", false})
+	}
+	m = step(m, provisionLogMsg{"web1", "writing sudoers drop-in", true})
+	m = step(m, provisionLogMsg{"web1", "parsed OK", false})
+
+	out := m.viewProvisioning()
+	// Both step headers are still present — nothing is cut off.
+	for _, want := range []string{"installing base packages", "writing sudoers drop-in", "parsed OK"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("box should keep %q, got:\n%s", want, out)
+		}
+	}
+	// The chatty command's output is capped (only ≤8 of its lines kept).
+	if got := strings.Count(out, "apt output"); got > stepOutputMax {
+		t.Errorf("command output should be capped at %d, got %d", stepOutputMax, got)
 	}
 }
 
