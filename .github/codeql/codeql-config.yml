@@ -1,0 +1,18 @@
+# CodeQL configuration for keel.
+#
+# keel is a first-touch server-bootstrap tool: it connects to brand-new hosts
+# before any trust has been established. By design it does NOT pin SSH host keys:
+#
+#   - `keel bootstrap` accepts the host key on connect (the StrictHostKeyChecking=no
+#     equivalent) — see internal/ssh/exec.go (gossh.InsecureIgnoreHostKey default).
+#   - `keel known-hosts` is a host-key *scanner* (the ssh-keyscan equivalent) that
+#     records whatever key the server presents — see internal/ssh/scan.go.
+#
+# Both legitimately use a permissive HostKeyCallback — there is no prior known
+# key to validate against at this stage — so go/insecure-hostkeycallback is a
+# false positive for this tool and is excluded below.
+name: keel
+
+query-filters:
+  - exclude:
+      id: go/insecure-hostkeycallback
