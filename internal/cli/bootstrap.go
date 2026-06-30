@@ -14,15 +14,6 @@ import (
 	"github.com/DigitalTolk/keel/internal/ssh"
 )
 
-func newBootstrapCmd(a *app) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "bootstrap",
-		Short: "Prepare hosts for Ansible (host keys, bofh user, sudoers, ssh keys)",
-	}
-	cmd.AddCommand(newKnownHostsCmd(a), newBootstrapRunCmd(a))
-	return cmd
-}
-
 func newKnownHostsCmd(a *app) *cobra.Command {
 	var port int
 	cmd := &cobra.Command{
@@ -47,7 +38,7 @@ func runKnownHosts(a *app, hosts []string, port int) error {
 	}
 
 	for _, host := range hosts {
-		a.log.Info(fmt.Sprintf("scanning %s:%d for host keys", host, port))
+		a.log.Info("scanning host keys", "host", host, "port", port)
 		line, err := a.scanHostKey(host, port, 30*time.Second)
 		if err != nil {
 			return fmt.Errorf("scan %s: %w", host, err)
@@ -61,12 +52,12 @@ func runKnownHosts(a *app, hosts []string, port int) error {
 		if err := writeFileAtomic(path, updated, 0o600); err != nil {
 			return fmt.Errorf("write %s: %w", path, err)
 		}
-		a.log.Success(fmt.Sprintf("added %s to known_hosts", host))
+		a.log.Info("added to known_hosts", "host", host)
 	}
 	return nil
 }
 
-func newBootstrapRunCmd(a *app) *cobra.Command {
+func newBootstrapCmd(a *app) *cobra.Command {
 	var (
 		user          string
 		port          int
@@ -79,8 +70,8 @@ func newBootstrapRunCmd(a *app) *cobra.Command {
 		adminUser     string
 	)
 	cmd := &cobra.Command{
-		Use:   "run HOST [HOST...]",
-		Short: "Bootstrap hosts: install packages, create the admin user, seed sudoers + ssh keys, write an inventory",
+		Use:   "bootstrap HOST [HOST...]",
+		Short: "Bootstrap hosts for Ansible: create the admin user, seed sudoers + ssh keys, write an inventory",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if user == "" {
@@ -151,7 +142,7 @@ func runBootstrap(a *app, p bootstrapParams) error {
 	var inventory []string
 
 	for _, host := range p.hosts {
-		a.log.Info(fmt.Sprintf("bootstrapping %s", host))
+		a.log.Info("bootstrapping host", "host", host)
 
 		target := ssh.Target{User: p.user, Host: host, Port: p.port}
 		client, err := a.dialer(target, ssh.DialOptions{
@@ -183,14 +174,14 @@ func runBootstrap(a *app, p bootstrapParams) error {
 			Port: p.port,
 			User: p.adminUser,
 		}.Line())
-		a.log.Success(fmt.Sprintf("bootstrapped %s", host))
+		a.log.Info("bootstrapped host", "host", host)
 	}
 
 	content := strings.Join(inventory, "\n") + "\n"
 	if err := writeFileAtomic(p.inventoryPath, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("write inventory: %w", err)
 	}
-	a.log.Success(fmt.Sprintf("wrote inventory to %s", p.inventoryPath))
+	a.log.Info("wrote inventory", "path", p.inventoryPath)
 	return nil
 }
 

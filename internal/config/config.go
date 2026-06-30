@@ -14,65 +14,8 @@ import (
 
 // Config is the resolved keel configuration.
 type Config struct {
-	Log    LogConfig    `yaml:"log"`
-	SSH    SSHConfig    `yaml:"ssh"`
-	AWS    AWSConfig    `yaml:"aws"`
-	Backup BackupConfig `yaml:"backup"`
-}
-
-// AWSConfig holds shared AWS settings.
-type AWSConfig struct {
-	Profile string `yaml:"profile"`
-}
-
-// BackupConfig holds named backup jobs runnable via `keel backup run <name>`.
-type BackupConfig struct {
-	Jobs map[string]JobConfig `yaml:"jobs"`
-}
-
-// JobConfig defines one named backup job.
-type JobConfig struct {
-	Type       string          `yaml:"type"` // mysql|jenkins
-	FilePrefix string          `yaml:"file_prefix"`
-	MySQL      MySQLJob        `yaml:"mysql"`
-	Jenkins    JenkinsJob      `yaml:"jenkins"`
-	Dest       DestConfig      `yaml:"dest"`
-	Retention  RetentionConfig `yaml:"retention"`
-}
-
-// MySQLJob holds connection details for a mysql backup job. The password is
-// referenced indirectly, never inlined.
-type MySQLJob struct {
-	Host         string `yaml:"host"`
-	Port         int    `yaml:"port"`
-	User         string `yaml:"user"`
-	DB           string `yaml:"db"`
-	AllDatabases bool   `yaml:"all_databases"`
-	PasswordEnv  string `yaml:"password_env"`
-	PasswordFile string `yaml:"password_file"`
-}
-
-// JenkinsJob holds settings for a jenkins home backup.
-type JenkinsJob struct {
-	Home     string   `yaml:"home"`
-	Excludes []string `yaml:"excludes"`
-}
-
-// DestConfig describes where a backup is stored.
-type DestConfig struct {
-	Kind     string `yaml:"kind"` // local|s3|b2
-	Bucket   string `yaml:"bucket"`
-	Prefix   string `yaml:"prefix"`
-	BaseDir  string `yaml:"base_dir"`
-	Region   string `yaml:"region"`
-	Endpoint string `yaml:"endpoint"`
-	KMSKey   string `yaml:"kms_key"`
-	Profile  string `yaml:"profile"`
-}
-
-// RetentionConfig controls how many backups to keep.
-type RetentionConfig struct {
-	Keep int `yaml:"keep"`
+	Log LogConfig `yaml:"log"`
+	SSH SSHConfig `yaml:"ssh"`
 }
 
 // LogConfig controls console output formatting.

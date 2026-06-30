@@ -5,7 +5,6 @@ Thanks for your interest in improving keel.
 ## Prerequisites
 
 - Go (the version pinned in [`go.mod`](go.mod))
-- Docker — only for the cloud integration tests (an S3-compatible endpoint)
 - Optional: `shellcheck` (lints `install.sh`), `goreleaser` (release builds)
 
 ## Development loop
@@ -15,17 +14,13 @@ go test ./... -race        # run the suite with the race detector
 go vet ./...               # static checks
 gofmt -w .                 # format
 go build ./cmd/keel        # build the binary
-```
 
-The `internal/cloud/aws` integration tests are skipped unless an S3-compatible
-endpoint is provided. To run them against MinIO locally:
-
-```sh
-docker run -d -p 9000:9000 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin minio/minio server /data
-KEEL_S3_TEST_ENDPOINT=http://localhost:9000 KEEL_S3_TEST_KEY=minioadmin KEEL_S3_TEST_SECRET=minioadmin \
-  go test ./internal/... -coverpkg=./internal/... -coverprofile=cover.out
+go test ./internal/... -coverpkg=./internal/... -coverprofile=cover.out
 go tool cover -func=cover.out | tail -1
 ```
+
+There are no external services or binaries to set up — keel shells out to nothing,
+and SSH is exercised in-process against a `crypto/ssh` test server.
 
 ## Expectations for a change
 
@@ -36,10 +31,10 @@ go tool cover -func=cover.out | tail -1
   make the code testable instead (depend on the existing interface/function seams).
 - **Green and clean.** `go test ./... -race`, `go vet ./...`, and `gofmt` must all
   pass before you open a PR.
-- **Native where it counts.** Reimplement in Go rather than shelling out, except
-  for tools that can't reasonably be reimplemented (`mysqldump`, `mysql`,
-  `VBoxManage`, `rsync`, `lftp`) — those go through the `runner` seam with a
-  dependency check.
+- **Native, no shelling out.** keel uses `golang.org/x/crypto/ssh` for all SSH work
+  and shells out to nothing — there is no `os/exec` in the tree. Keep it that way.
+- **Stay in scope.** keel only bootstraps hosts for Ansible. Don't add unrelated
+  features.
 
 See [`CLAUDE.md`](CLAUDE.md) for the full architecture and conventions.
 

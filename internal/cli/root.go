@@ -2,17 +2,15 @@
 package cli
 
 import (
-	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	awscloud "github.com/DigitalTolk/keel/internal/cloud/aws"
 	"github.com/DigitalTolk/keel/internal/config"
-	"github.com/DigitalTolk/keel/internal/log"
-	"github.com/DigitalTolk/keel/internal/runner"
 	"github.com/DigitalTolk/keel/internal/ssh"
 	"github.com/DigitalTolk/keel/internal/version"
 )
@@ -29,33 +27,35 @@ type SSHSession interface {
 // implementations and are swapped for fakes in tests.
 type app struct {
 	cfg     config.Config
-	log     *log.Logger
+	log     *slog.Logger
 	verbose bool
 
-	runnerFactory   func() runner.Runner
-	requireTools    func(tools ...string) error
-	dialer          func(ssh.Target, ssh.DialOptions) (SSHSession, error)
-	scanHostKey     func(host string, port int, timeout time.Duration) (string, error)
-	readPassword    func(prompt string) (string, error)
-	fetchIP         func(ctx context.Context, url string) (string, error)
-	sgClientFactory func(ctx context.Context, opts awscloud.SGOptions) (awscloud.SGClient, error)
-	now             func() time.Time
+	dialer       func(ssh.Target, ssh.DialOptions) (SSHSession, error)
+	scanHostKey  func(host string, port int, timeout time.Duration) (string, error)
+	readPassword func(prompt string) (string, error)
 }
 
 // newApp builds an app wired to the real implementations.
 func newApp() *app {
 	return &app{
-		runnerFactory: func() runner.Runner { return runner.Exec{} },
-		requireTools:  runner.RequireTools,
 		dialer: func(t ssh.Target, o ssh.DialOptions) (SSHSession, error) {
 			return ssh.Dial(t, o)
 		},
-		scanHostKey:     ssh.ScanHostKey,
-		readPassword:    promptPassword,
-		fetchIP:         fetchPublicIP,
-		sgClientFactory: awscloud.NewSecurityGroupClient,
-		now:             func() time.Time { return time.Now().UTC() },
+		scanHostKey:  ssh.ScanHostKey,
+		readPassword: promptPassword,
 	}
+}
+
+// newLogger builds an slog logger writing to w. format "json" selects the
+// structured JSON handler; anything else uses the human-friendly text handler.
+func newLogger(format string, w io.Writer) *slog.Logger {
+	var h slog.Handler
+	if format == "json" {
+		h = slog.NewJSONHandler(w, nil)
+	} else {
+		h = slog.NewTextHandler(w, nil)
+	}
+	return slog.New(h)
 }
 
 func newRootCmd() *cobra.Command { return buildRoot(newApp()) }
@@ -72,8 +72,8 @@ func buildRoot(a *app) *cobra.Command {
 
 	root := &cobra.Command{
 		Use:           "keel",
-		Short:         "Company-wide systems operations tool",
-		Long:          "keel consolidates the keel server-bootstrap and operations scripts into one binary.",
+		Short:         "Bootstrap fresh servers for management with Ansible",
+		Long:          "keel prepares a fresh machine for Ansible: it scans host keys, creates the admin user with a passwordless sudoers drop-in, seeds SSH keys, and writes an inventory.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version.Version,
@@ -90,7 +90,7 @@ func buildRoot(a *app) *cobra.Command {
 				cfg.Log.Format = logFormat
 			}
 			a.cfg = cfg
-			a.log = log.New()
+			a.log = newLogger(cfg.Log.Format, os.Stderr)
 			return nil
 		},
 	}
@@ -101,11 +101,7 @@ func buildRoot(a *app) *cobra.Command {
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose error output")
 
 	root.AddCommand(newBootstrapCmd(a))
-	root.AddCommand(newBackupCmd(a))
-	root.AddCommand(newAWSCmd(a))
-	root.AddCommand(newVboxCmd(a))
-	root.AddCommand(newJenkinsCmd(a))
-	root.AddCommand(newMySQLCmd(a))
+	root.AddCommand(newKnownHostsCmd(a))
 
 	return root
 }
