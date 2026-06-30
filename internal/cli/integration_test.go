@@ -99,14 +99,10 @@ func TestRealSeamsAgainstSSHServer(t *testing.T) {
 	}
 
 	// bootstrap uses the real ssh.Dial seam + real provisioning over SSH.
-	inv := filepath.Join(home, "inventory")
 	err = runCmd(newApp(), "bootstrap", "-u", "root", "-p", strconv.Itoa(port),
-		"--pubkey", "ssh-ed25519 K u@h", "--inventory", inv, host)
+		"--pubkey", "ssh-ed25519 K u@h", host)
 	if err != nil {
-		t.Fatalf("bootstrap run (real dial): %v", err)
-	}
-	if data, _ := os.ReadFile(inv); !strings.Contains(string(data), "ansible_user=bofh") {
-		t.Fatalf("inventory not written: %q", data)
+		t.Fatalf("bootstrap (real dial): %v", err)
 	}
 }
 
@@ -162,8 +158,7 @@ func TestBootstrapRunProvisionError(t *testing.T) {
 	a.dialer = func(ssh.Target, ssh.DialOptions) (SSHSession, error) {
 		return &fakeSession{execErr: errScan}, nil
 	}
-	err := runCmd(a, "bootstrap", "-u", "root",
-		"--inventory", filepath.Join(t.TempDir(), "inv"), "web1")
+	err := runCmd(a, "bootstrap", "-u", "root", "web1")
 	if err == nil {
 		t.Fatal("provision failure should propagate")
 	}
@@ -175,7 +170,7 @@ func TestConfigLoadErrorPropagates(t *testing.T) {
 	a.log = nil // force the real PersistentPreRunE config-load path
 	a.dialer = func(ssh.Target, ssh.DialOptions) (SSHSession, error) { return &fakeSession{}, nil }
 	err := runCmd(a, "--config", filepath.Join(t.TempDir(), "missing.yaml"),
-		"bootstrap", "-u", "root", "--inventory", filepath.Join(t.TempDir(), "inv"), "web1")
+		"bootstrap", "-u", "root", "web1")
 	if err == nil {
 		t.Fatal("missing --config should error")
 	}
@@ -199,8 +194,7 @@ func TestBootstrapRunPubkeyFileError(t *testing.T) {
 	a, _ := newTestApp()
 	a.dialer = func(ssh.Target, ssh.DialOptions) (SSHSession, error) { return &fakeSession{}, nil }
 	err := runCmd(a, "bootstrap", "-u", "root",
-		"--pubkey-file", filepath.Join(t.TempDir(), "nope"),
-		"--inventory", filepath.Join(t.TempDir(), "inv"), "web1")
+		"--pubkey-file", filepath.Join(t.TempDir(), "nope"), "web1")
 	if err == nil {
 		t.Fatal("missing --pubkey-file should error")
 	}
@@ -213,9 +207,8 @@ func TestBootstrapRunAskPass(t *testing.T) {
 	called := false
 	a.readPassword = func(string) (string, error) { called = true; return "secret", nil }
 
-	inv := filepath.Join(t.TempDir(), "inv")
-	if err := runCmd(a, "bootstrap", "-u", "deploy", "--ask-pass", "--inventory", inv, "web1"); err != nil {
-		t.Fatalf("bootstrap run --ask-pass: %v", err)
+	if err := runCmd(a, "bootstrap", "-u", "deploy", "--ask-pass", "web1"); err != nil {
+		t.Fatalf("bootstrap --ask-pass: %v", err)
 	}
 	if !called {
 		t.Error("--ask-pass should invoke the password prompt seam")

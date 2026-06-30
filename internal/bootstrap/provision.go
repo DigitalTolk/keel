@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"encoding/base64"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -16,15 +17,53 @@ type Executor interface {
 	Exec(cmd string) (string, error)
 }
 
+// StreamExecutor optionally streams a command's combined output line-by-line.
+// ssh.Client implements it; when the Executor also implements it and OnOutput is
+// set, side-effect commands stream their host output live. Fakes that don't
+// implement it fall back to Exec.
+type StreamExecutor interface {
+	ExecStream(cmd string, w io.Writer) error
+}
+
+// lineWriter splits incoming bytes into lines and calls emit for each complete
+// line, so streamed host output can be forwarded one line at a time.
+type lineWriter struct {
+	buf  strings.Builder
+	emit func(string)
+}
+
+func (lw *lineWriter) Write(p []byte) (int, error) {
+	for _, b := range p {
+		switch b {
+		case '\n':
+			lw.emit(lw.buf.String())
+			lw.buf.Reset()
+		case '\r':
+			// drop carriage returns
+		default:
+			lw.buf.WriteByte(b)
+		}
+	}
+	return len(p), nil
+}
+
+func (lw *lineWriter) flush() {
+	if lw.buf.Len() > 0 {
+		lw.emit(lw.buf.String())
+		lw.buf.Reset()
+	}
+}
+
 // SudoWrapper elevates a command to root. Implementations: identity (already
 // root), "sudo …" (passwordless), or "echo PASS | sudo -S …" (with password).
 type SudoWrapper func(cmd string) string
 
 // AptInstallCommand updates the package cache and installs pkgs without any
-// interactive prompts.
+// interactive prompts. It uses -q (not -qq) so apt still reports what it is
+// doing — that output is streamed into the provisioning log.
 func AptInstallCommand(pkgs []string) string {
 	return fmt.Sprintf(
-		"apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -y -qq install %s",
+		"apt-get -q update && DEBIAN_FRONTEND=noninteractive apt-get -y -q install %s",
 		strings.Join(pkgs, " "),
 	)
 }
@@ -88,8 +127,10 @@ func SudoWrapperFor(connectUser, password string) SudoWrapper {
 type Provisioner struct {
 	Exec        Executor
 	Sudo        SudoWrapper
-	AdminUser   string // privileged user to ensure (default "bofh")
-	ConnectUser string // the user we connected as
+	AdminUser   string       // privileged user to ensure (default "bofh")
+	ConnectUser string       // the user we connected as
+	OnStep      func(string) // optional: called with a human-readable label before each step
+	OnOutput    func(string) // optional: called with each line of live host output
 }
 
 func (p Provisioner) sudo(cmd string) string {
@@ -99,7 +140,19 @@ func (p Provisioner) sudo(cmd string) string {
 	return p.Sudo(cmd)
 }
 
+func (p Provisioner) step(label string) {
+	if p.OnStep != nil {
+		p.OnStep(label)
+	}
+}
+
 func (p Provisioner) run(cmd string) error {
+	if se, ok := p.Exec.(StreamExecutor); ok && p.OnOutput != nil {
+		lw := &lineWriter{emit: p.OnOutput}
+		err := se.ExecStream(cmd, lw)
+		lw.flush()
+		return err
+	}
 	_, err := p.Exec.Exec(cmd)
 	return err
 }
@@ -112,6 +165,7 @@ func (p Provisioner) Run(authorizedKeys []string) error {
 		admin = DefaultAdminUser
 	}
 
+	p.step("installing base packages")
 	if err := p.run(p.sudo(AptInstallCommand(BasePackages))); err != nil {
 		return fmt.Errorf("install base packages: %w", err)
 	}
@@ -119,6 +173,7 @@ func (p Provisioner) Run(authorizedKeys []string) error {
 	// Create the admin user only if it does not already exist and we are not
 	// already connected as it (mirrors the script's guard).
 	if p.ConnectUser != admin {
+		p.step("ensuring admin user " + admin)
 		if _, err := p.Exec.Exec(fmt.Sprintf("id -u %s", admin)); err != nil {
 			if err := p.run(p.sudo(UseraddCommand(admin))); err != nil {
 				return fmt.Errorf("create admin user %s: %w", admin, err)
@@ -126,13 +181,16 @@ func (p Provisioner) Run(authorizedKeys []string) error {
 		}
 	}
 
+	p.step("writing sudoers drop-in")
 	if err := p.run(p.sudo(WriteSudoersCommand(admin))); err != nil {
 		return fmt.Errorf("write sudoers: %w", err)
 	}
 
+	p.step("creating .ssh directory")
 	if err := p.run(p.sudo(EnsureSSHDirCommand(admin))); err != nil {
 		return fmt.Errorf("create ssh dir: %w", err)
 	}
+	p.step("installing authorized keys")
 	for _, key := range authorizedKeys {
 		if strings.TrimSpace(key) == "" {
 			continue

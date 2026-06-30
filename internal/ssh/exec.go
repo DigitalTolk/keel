@@ -3,6 +3,7 @@ package ssh
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -140,6 +141,24 @@ func (c *Client) Exec(cmd string) (string, error) {
 		return "", fmt.Errorf("command %q failed: %w: %s", cmd, err, trimNL(stderr.String()))
 	}
 	return trimNL(stdout.String()), nil
+}
+
+// ExecStream runs a single command, streaming its combined stdout+stderr to w
+// as it arrives (rather than buffering it). A non-zero exit status is returned
+// as an error. Used to surface live host output during provisioning.
+func (c *Client) ExecStream(cmd string, w io.Writer) error {
+	session, err := c.conn.NewSession()
+	if err != nil {
+		return fmt.Errorf("new session: %w", err)
+	}
+	defer session.Close()
+
+	session.Stdout = w
+	session.Stderr = w
+	if err := session.Run(cmd); err != nil {
+		return fmt.Errorf("command %q failed: %w", cmd, err)
+	}
+	return nil
 }
 
 // Close releases the connection and any jump-host connection.

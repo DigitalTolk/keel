@@ -1,9 +1,10 @@
 # keel — Project Instructions
 
 **keel** does exactly one thing: it prepares a fresh machine for Ansible. It scans
-host keys, creates the admin user (`bofh`) with a passwordless sudoers drop-in, seeds
-authorized SSH keys, and writes an Ansible inventory — then hands off to Ansible.
-Nothing more. It is a single static Go binary, no runtime.
+host keys, creates the admin user (`bofh`) with a passwordless sudoers drop-in, and
+seeds authorized SSH keys — then hands off to Ansible. Nothing more. It is a single
+static Go binary, no runtime. Run `keel bootstrap` with no hosts for a guided,
+interactive (TUI) setup.
 
 keel is open source at **github.com/DigitalTolk/keel** (MIT). The Go module lives at the
 repository root (module path `github.com/DigitalTolk/keel`); CI is GitHub Actions
@@ -60,9 +61,15 @@ Hard-to-test code is a design smell — fix the design, don't skip the test. The
 established pattern: depend on **interfaces / function seams**, default them to the
 real implementation, and substitute fakes in tests. Existing seams:
 
-- `app` struct seams in `internal/cli`: an SSH dialer, a host-key scanner, and a
-  password prompt — so command bodies run in tests without a network, TTY, or live
-  SSH server.
+- `app` struct seams in `internal/cli`: an SSH dialer, a host-key scanner, a
+  password prompt, an `interactive` (is-a-TTY) check, and the `tui` (guided
+  full-screen flow) seam — so command bodies run in tests without a network, TTY, or
+  live SSH server. The guided TUI is a Bubble Tea model (`internal/cli/tui.go`): its
+  `Update`/`View` reducer, the field mapping (`bootstrapFields.toParams`), and the
+  streaming `provisionStream` goroutine are all unit-tested by feeding synthetic
+  messages / a fake dialer. Only `runBootstrapTUI`'s literal `tea.Run` (needs a real
+  terminal) is left uncovered. `bootstrap.Provisioner` takes an optional `OnStep`
+  callback so the TUI can render per-step progress.
 - `bootstrap.Executor` — the remote-command interface the `Provisioner` runs over
   (`ssh.Client` satisfies it; tests use a fake).
 - `ssh` is tested against an in-process `crypto/ssh` server.
@@ -81,14 +88,22 @@ time — route it through a seam so it can be faked.
   `bootstrap.go`) → the `bootstrap` domain package + shared primitives (`ssh`,
   `config`, `version`). Logging is the standard library `log/slog`. Keep each
   package small and single-purpose.
-- **Native, no shelling out.** SSH exec, host-key scanning, and the jump-host tunnel
-  are implemented in Go via **`golang.org/x/crypto/ssh`** (replacing the original
-  script's `sshpass` / `ssh` / `ssh-keyscan`). keel shells out to nothing — there is
-  no `os/exec` in the tree, and it must stay that way. Use a well-supported library
-  instead of an external binary.
-- **CLI:** two top-level commands — `keel bootstrap HOST...` (provision) and
+- **Native, no shelling out.** SSH exec (buffered `Exec` + streaming `ExecStream`),
+  host-key scanning, and the jump-host tunnel are implemented in Go via
+  **`golang.org/x/crypto/ssh`** (replacing the original script's `sshpass` / `ssh` /
+  `ssh-keyscan`); `~/.ssh/config` is parsed natively with `kevinburke/ssh_config`
+  (`ssh.ResolveHost`). keel shells out to nothing — there is no `os/exec` in the tree,
+  and it must stay that way. Use a well-supported library instead of an external
+  binary.
+- **CLI:** two top-level commands — `keel bootstrap [HOST...]` (provision) and
   `keel known-hosts HOST...` (scan host keys). No `bootstrap` sub-grouping. Every
-  command has a clear `Short`/usage.
+  command has a clear `Short`/usage. In a terminal, `keel bootstrap` opens a guided
+  full-screen Bubble Tea TUI (`charmbracelet/bubbletea` + `bubbles`) that collects
+  input (pre-filled from args/flags and `~/.ssh/config`) and then streams live host
+  provisioning logs in place (Docker-style, via the Provisioner's `OnStep`/`OnOutput`
+  callbacks over `ssh.ExecStream`); non-interactive (piped), it runs straight from the
+  flags. `resolveTarget` merges precedence `explicit > ssh_config > keel defaults` at
+  dial time.
 - **Config precedence:** `flags > environment > config file > defaults`. Flags are
   applied by the cli layer; `config` handles defaults, file, and environment. Preserve
   the legacy env-var names (`SSH_USER`, `SSH_PORT`, `SSH_JUMP_HOST`, `KEEL_LOG_FORMAT`)
@@ -116,9 +131,20 @@ go test ./internal/<pkg>/ -run TestName -v   # focused test run
 go test ./internal/... -coverpkg=./internal/... -coverprofile=cover.out
 go tool cover -func=cover.out | tail -1
 
+# end-to-end tests against a real sshd container (build-tagged "e2e", env-gated)
+docker build -t keel-sshd -f test/e2e/Dockerfile test/e2e
+docker run -d --name keel-sshd -p 2222:22 keel-sshd
+KEEL_E2E_SSH_ADDR=127.0.0.1:2222 KEEL_E2E_SSH_USER=root KEEL_E2E_SSH_PASSWORD=keelpass \
+  go test -tags e2e -v ./e2e/...
+
 # cross-platform release build
 goreleaser build --snapshot --clean
 ```
+
+The `e2e` package (build tag `e2e`, gated by `KEEL_E2E_SSH_ADDR`) provisions a real
+Ubuntu sshd container end-to-end and asserts the admin user, a `visudo`-valid sudoers
+drop-in, and `authorized_keys` all landed. It is excluded from the normal unit run and
+from the coverage measurement; CI runs it as a dedicated job.
 
 ---
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/DigitalTolk/keel/internal/config"
 	"github.com/DigitalTolk/keel/internal/ssh"
@@ -33,6 +34,8 @@ type app struct {
 	dialer       func(ssh.Target, ssh.DialOptions) (SSHSession, error)
 	scanHostKey  func(host string, port int, timeout time.Duration) (string, error)
 	readPassword func(prompt string) (string, error)
+	interactive  func() bool                              // is stdin a terminal?
+	tui          func(a *app, seed bootstrapParams) error // guided full-screen flow
 }
 
 // newApp builds an app wired to the real implementations.
@@ -43,6 +46,8 @@ func newApp() *app {
 		},
 		scanHostKey:  ssh.ScanHostKey,
 		readPassword: promptPassword,
+		interactive:  func() bool { return term.IsTerminal(int(os.Stdin.Fd())) },
+		tui:          runBootstrapTUI,
 	}
 }
 
@@ -73,7 +78,7 @@ func buildRoot(a *app) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "keel",
 		Short:         "Bootstrap fresh servers for management with Ansible",
-		Long:          "keel prepares a fresh machine for Ansible: it scans host keys, creates the admin user with a passwordless sudoers drop-in, seeds SSH keys, and writes an inventory.",
+		Long:          "keel prepares a fresh machine for Ansible: it scans host keys, creates the admin user with a passwordless sudoers drop-in, and seeds SSH keys.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version.Version,

@@ -19,8 +19,19 @@ go test ./internal/... -coverpkg=./internal/... -coverprofile=cover.out
 go tool cover -func=cover.out | tail -1
 ```
 
-There are no external services or binaries to set up — keel shells out to nothing,
-and SSH is exercised in-process against a `crypto/ssh` test server.
+Unit tests need no external services — keel shells out to nothing, and SSH is
+exercised in-process against a `crypto/ssh` test server.
+
+End-to-end tests provision a **real** sshd container. They are build-tagged `e2e` and
+gated by `KEEL_E2E_SSH_ADDR`, so they are skipped by the normal run:
+
+```sh
+docker build -t keel-sshd -f test/e2e/Dockerfile test/e2e
+docker run -d --name keel-sshd -p 2222:22 keel-sshd
+KEEL_E2E_SSH_ADDR=127.0.0.1:2222 KEEL_E2E_SSH_USER=root KEEL_E2E_SSH_PASSWORD=keelpass \
+  go test -tags e2e -v ./e2e/...
+docker rm -f keel-sshd
+```
 
 ## Expectations for a change
 

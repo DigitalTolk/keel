@@ -2,9 +2,77 @@ package bootstrap
 
 import (
 	"fmt"
+	"io"
+	"slices"
 	"strings"
 	"testing"
 )
+
+// streamExec implements both Executor and StreamExecutor, so the Provisioner
+// streams side-effect commands through ExecStream when OnOutput is set.
+type streamExec struct {
+	cmds   []string
+	output string
+}
+
+func (s *streamExec) Exec(cmd string) (string, error) {
+	s.cmds = append(s.cmds, cmd)
+	if strings.Contains(cmd, "id -u") {
+		return "1000", nil // user exists
+	}
+	return "", nil
+}
+
+func (s *streamExec) ExecStream(cmd string, w io.Writer) error {
+	s.cmds = append(s.cmds, cmd)
+	_, _ = io.WriteString(w, s.output)
+	return nil
+}
+
+// TestProvisionStreamsOutput verifies that, given a StreamExecutor and OnOutput,
+// the Provisioner emits each line of host output — including a trailing partial
+// line with no newline (exercising lineWriter.flush).
+func TestProvisionStreamsOutput(t *testing.T) {
+	se := &streamExec{output: "Reading package lists...\nBuilding dependency tree\nDone"}
+	var out []string
+	p := Provisioner{
+		Exec: se, Sudo: func(c string) string { return c }, AdminUser: "bofh", ConnectUser: "root",
+		OnOutput: func(l string) { out = append(out, l) },
+	}
+	if err := p.Run([]string{"ssh-ed25519 K a@b"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, want := range []string{"Reading package lists...", "Building dependency tree", "Done"} {
+		if !slices.Contains(out, want) {
+			t.Errorf("streamed output missing %q: %v", want, out)
+		}
+	}
+}
+
+// TestProvisionOnStepCallback verifies the OnStep hook is invoked with a label
+// before each provisioning step.
+func TestProvisionOnStepCallback(t *testing.T) {
+	exec := &fakeExec{respond: func(cmd string) (string, error) {
+		if strings.Contains(cmd, "id -u bofh") {
+			return "1000", nil
+		}
+		return "", nil
+	}}
+	var steps []string
+	p := Provisioner{
+		Exec: exec, Sudo: func(c string) string { return c }, AdminUser: "bofh", ConnectUser: "root",
+		OnStep: func(s string) { steps = append(steps, s) },
+	}
+	if err := p.Run([]string{"ssh-ed25519 K a@b"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	joined := strings.Join(steps, "|")
+	for _, want := range []string{"base packages", "admin user bofh", "sudoers", "authorized keys"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("step labels missing %q: %v", want, steps)
+		}
+	}
+}
 
 // TestProvisionSudoNilLeavesCommandsUnwrapped verifies that when Sudo is nil the
 // sudo() helper returns the command unchanged (identity branch), so the raw
