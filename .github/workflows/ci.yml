@@ -1,0 +1,127 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "${unformatted}" ]; then
+            echo "These files are not gofmt'd:"; echo "${unformatted}"; exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      code-quality: write # required to upload coverage to GitHub Code Quality
+    steps:
+      # Check out the PR head (not the merge commit) so coverage lines map to the diff.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Test (race + coverage)
+        run: |
+          go test ./... -race -coverpkg=./internal/... -coverprofile=coverage.out
+          go tool cover -func=coverage.out | tail -1
+
+      - name: Enforce coverage floor
+        env:
+          FLOOR: "94.0"
+        run: |
+          total=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "total coverage: ${total}% (floor ${FLOOR}%, target 95%)"
+          awk -v c="$total" -v f="$FLOOR" 'BEGIN { if (c+0 < f+0) { printf "FAIL: coverage %.1f%% below floor %.1f%%\n", c, f; exit 1 } }'
+
+      - name: Convert coverage to Cobertura XML
+        run: |
+          go install github.com/boumenot/gocover-cobertura@latest
+          "$(go env GOPATH)/bin/gocover-cobertura" < coverage.out > coverage.xml
+
+      - name: Upload coverage report
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-code-coverage@v1
+        with:
+          file: coverage.xml
+          language: Go
+          label: code-coverage/unit
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build (all release targets)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            GOOS="${target%/*}" GOARCH="${target#*/}" go build -o /dev/null ./cmd/keel
+            echo "built ${target}"
+          done
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build SSH test image
+        run: docker build -t keel-sshd -f test/e2e/Dockerfile test/e2e
+
+      - name: Start sshd container
+        run: docker run -d --name keel-sshd -p 2222:22 keel-sshd
+
+      - name: Wait for sshd
+        run: |
+          for i in $(seq 1 30); do
+            if (exec 3<>/dev/tcp/127.0.0.1/2222) 2>/dev/null; then echo "sshd up"; exit 0; fi
+            sleep 1
+          done
+          echo "sshd did not come up"; docker logs keel-sshd; exit 1
+
+      - name: Run e2e tests
+        env:
+          KEEL_E2E_SSH_ADDR: 127.0.0.1:2222
+          KEEL_E2E_SSH_USER: root
+          KEEL_E2E_SSH_PASSWORD: keelpass
+        run: go test -tags e2e -v ./e2e/...
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs keel-sshd || true

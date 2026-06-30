@@ -306,6 +306,38 @@ func TestExecStderrIncludedInError(t *testing.T) {
 	}
 }
 
+func TestExecStreamWritesOutput(t *testing.T) {
+	addr, _ := startTestServer(t, func(cmd string) (string, int) { return "out-line\n", 0 })
+	tgt := dialTarget(t, addr, "bofh")
+	client, err := Dial(tgt, DialOptions{Password: "pw", Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer client.Close()
+
+	var sb strings.Builder
+	if err := client.ExecStream("ls", &sb); err != nil {
+		t.Fatalf("ExecStream: %v", err)
+	}
+	if !strings.Contains(sb.String(), "out-line") {
+		t.Errorf("ExecStream output = %q, want it to contain out-line", sb.String())
+	}
+}
+
+func TestExecStreamNonZeroIsError(t *testing.T) {
+	addr, _ := startTestServer(t, func(cmd string) (string, int) { return "x", 2 })
+	tgt := dialTarget(t, addr, "bofh")
+	client, err := Dial(tgt, DialOptions{Password: "pw", Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer client.Close()
+
+	if err := client.ExecStream("boom", io.Discard); err == nil {
+		t.Fatal("ExecStream: want error on non-zero exit, got nil")
+	}
+}
+
 func TestUpsertKnownHostsLineWhitespaceFirstField(t *testing.T) {
 	// A line whose first field is empty exercises firstField's empty branch.
 	out := UpsertKnownHostsLine([]byte("real.host ssh-rsa KEEP\n"), "   ")
