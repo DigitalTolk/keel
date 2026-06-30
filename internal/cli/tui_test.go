@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/DigitalTolk/keel/internal/config"
 	"github.com/DigitalTolk/keel/internal/ssh"
@@ -116,20 +116,21 @@ func TestBootstrapFieldsToParamsReadsPubkeyFile(t *testing.T) {
 
 // --- TUI model ---------------------------------------------------------------
 
-func key(s string) tea.KeyMsg {
+func key(s string) tea.KeyPressMsg {
 	switch s {
 	case "tab":
-		return tea.KeyMsg{Type: tea.KeyTab}
+		return tea.KeyPressMsg{Code: tea.KeyTab}
 	case "shift+tab":
-		return tea.KeyMsg{Type: tea.KeyShiftTab}
+		return tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
 	case "enter":
-		return tea.KeyMsg{Type: tea.KeyEnter}
+		return tea.KeyPressMsg{Code: tea.KeyEnter}
 	case "space":
-		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}}
+		return tea.KeyPressMsg{Code: tea.KeySpace}
 	case "esc":
-		return tea.KeyMsg{Type: tea.KeyEsc}
+		return tea.KeyPressMsg{Code: tea.KeyEscape}
 	default:
-		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+		r := []rune(s)[0]
+		return tea.KeyPressMsg{Code: r, Text: s}
 	}
 }
 
@@ -358,11 +359,11 @@ func TestModelWindowSizeAndViews(t *testing.T) {
 
 func TestModelViewDispatchAndHelpers(t *testing.T) {
 	m := newBootstrapModel(bootstrapFields{hosts: "web1"}, nil)
-	if m.View() == "" {
-		t.Error("View() should render the form")
+	if m.View().Content == "" || !m.View().AltScreen {
+		t.Error("View() should render the form in the alt-screen")
 	}
 	m.provisioning = true
-	if m.View() == "" {
+	if m.View().Content == "" {
 		t.Error("View() should render the progress view")
 	}
 	// field() returns nil for the non-textinput focusables.
@@ -394,8 +395,8 @@ func TestModelKeyWhileRunningIsIgnored(t *testing.T) {
 func TestModelResizeClampsNarrowWidth(t *testing.T) {
 	m := newBootstrapModel(bootstrapFields{}, nil)
 	m = step(m, tea.WindowSizeMsg{Width: 10, Height: 5}) // narrower than the min field width
-	if m.hosts.Width < 20 {
-		t.Errorf("field width should clamp to a minimum, got %d", m.hosts.Width)
+	if m.hosts.Width() < 20 {
+		t.Errorf("field width should clamp to a minimum, got %d", m.hosts.Width())
 	}
 }
 

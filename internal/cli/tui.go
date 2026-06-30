@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/DigitalTolk/keel/internal/bootstrap"
 )
@@ -56,13 +56,13 @@ func waitForActivity(ch <-chan tea.Msg) tea.Cmd {
 // --- styles ------------------------------------------------------------------
 //
 // Colors are ANSI palette indices so they follow the terminal's own theme.
-// Adaptive {Light,Dark} pairs keep text legible on both backgrounds; the dark
-// help color is bright on purpose so the footer stays readable on dark themes.
+// lipgloss v2 dropped AdaptiveColor; ANSI indices already adapt to the palette
+// (e.g. Dracula), and the help color is bright so the footer stays readable.
 var (
-	tuiAccent  = lipgloss.AdaptiveColor{Light: "4", Dark: "12"}
-	tuiText    = lipgloss.AdaptiveColor{Light: "0", Dark: "7"}
-	tuiHelpCol = lipgloss.AdaptiveColor{Light: "8", Dark: "7"}
-	tuiHint    = lipgloss.AdaptiveColor{Light: "8", Dark: "8"}
+	tuiAccent  = lipgloss.Color("12") // bright blue
+	tuiText    = lipgloss.Color("7")  // foreground
+	tuiHelpCol = lipgloss.Color("7")  // foreground (readable footer)
+	tuiHint    = lipgloss.Color("8")  // dim gray
 
 	styTitle  = lipgloss.NewStyle().Bold(true).Foreground(tuiAccent)
 	styLabel  = lipgloss.NewStyle().Width(12).Foreground(tuiText)
@@ -124,7 +124,6 @@ func newTextField(value, placeholder string, masked bool) textinput.Model {
 	ti.SetValue(value)
 	ti.Placeholder = placeholder
 	ti.Prompt = "› "
-	ti.PlaceholderStyle = styHint
 	if masked {
 		ti.EchoMode = textinput.EchoPassword
 	}
@@ -254,11 +253,7 @@ func (m *bootstrapModel) submit() tea.Cmd {
 	return tea.Batch(waitForActivity(m.ch), m.spinner.Tick)
 }
 
-func (m bootstrapModel) Init() tea.Cmd {
-	// The whole TUI (form and provisioning) runs in the alt-screen, so it draws
-	// in place and leaves the terminal clean on exit.
-	return tea.Batch(tea.EnterAltScreen, textinput.Blink)
-}
+func (m bootstrapModel) Init() tea.Cmd { return textinput.Blink }
 
 func (m bootstrapModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
@@ -274,7 +269,7 @@ func (m bootstrapModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m bootstrapModel) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "esc", "ctrl+c":
 			m.canceled = true
@@ -298,7 +293,7 @@ func (m bootstrapModel) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.focusNext()
 				return m, nil
 			}
-		case " ":
+		case "space":
 			switch m.order[m.focus] {
 			case fcAdvanced:
 				m.toggleAdvanced()
@@ -352,7 +347,7 @@ func (m bootstrapModel) updateProvisioning(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if m.finished {
 			return m, tea.Quit
 		}
@@ -363,7 +358,7 @@ func (m bootstrapModel) updateProvisioning(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *bootstrapModel) resize() {
 	w := max(m.width-16, 20)
 	for _, fc := range []focusable{fcHosts, fcUser, fcPassword, fcPort, fcAdminUser, fcJump, fcIdentity, fcPubkeyFile} {
-		m.field(fc).Width = w
+		m.field(fc).SetWidth(w)
 	}
 	m.keys.SetWidth(max(m.width-4, 24))
 }
@@ -394,11 +389,16 @@ func truncateStr(s string, maxw int) string {
 	return string(r[:maxw-1]) + "…"
 }
 
-func (m bootstrapModel) View() string {
+func (m bootstrapModel) View() tea.View {
+	content := m.viewForm()
 	if m.provisioning {
-		return m.viewProvisioning()
+		content = m.viewProvisioning()
 	}
-	return m.viewForm()
+	// The whole TUI runs in the alt-screen, so it draws in place and leaves the
+	// terminal clean on exit.
+	v := tea.NewView(content)
+	v.AltScreen = true
+	return v
 }
 
 func (m bootstrapModel) pointer(fc focusable) string {
