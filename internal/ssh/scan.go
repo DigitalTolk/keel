@@ -28,6 +28,10 @@ func ScanHostKey(host string, port int, timeout time.Duration) (string, error) {
 		User:    "keel-keyscan",
 		Auth:    []gossh.AuthMethod{},
 		Timeout: timeout,
+		// This is a host-key scanner (the ssh-keyscan equivalent): there is no
+		// prior known key to validate against, so it records whatever key the
+		// server presents. The permissive callback is intentional and is excluded
+		// from the go/insecure-hostkeycallback query in .github/codeql/.
 		HostKeyCallback: func(_ string, _ net.Addr, key gossh.PublicKey) error {
 			captured = key
 			return nil
