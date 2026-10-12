@@ -99,7 +99,7 @@ func TestViaSuDropsItsPasswordPrompt(t *testing.T) {
 	}
 }
 
-var errNotSudoer = errors.New("Process exited with status 1: customer is not in the sudoers file.")
+var errNotSudoer = errors.New("exit status 1: customer is not in the sudoers file")
 
 // hostExec fakes a host where sudo and su each either work or fail with the
 // given error, and the admin user already exists.
@@ -205,7 +205,7 @@ func TestProvisionSuUsesTheRootPassword(t *testing.T) {
 }
 
 func TestProvisionWithoutRootAccessChangesNothing(t *testing.T) {
-	exec := hostExec(errNotSudoer, errors.New("Process exited with status 1"))
+	exec := hostExec(errNotSudoer, errors.New("exit status 1"))
 	p := Provisioner{Exec: exec, ConnectUser: "customer", Password: "pw"}
 
 	err := p.Run([]string{"ssh-ed25519 K a@b"})

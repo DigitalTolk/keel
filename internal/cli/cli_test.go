@@ -40,10 +40,10 @@ func notASudoer(rootPassword string, sess *fakeSession) func(cmd string) error {
 	return func(cmd string) error {
 		switch {
 		case strings.Contains(cmd, "sudo"):
-			return errors.New("Process exited with status 1: customer is not in the sudoers file.")
+			return errors.New("exit status 1: customer is not in the sudoers file")
 		case strings.HasPrefix(cmd, "su "):
 			if sess.stdins[len(sess.stdins)-1] != rootPassword+"\n" {
-				return errors.New("Process exited with status 1")
+				return errors.New("exit status 1")
 			}
 		}
 		return nil
