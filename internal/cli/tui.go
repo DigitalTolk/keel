@@ -24,6 +24,7 @@ const (
 	fcAdvanced // the expand/collapse toggle
 	fcPort
 	fcAdminUser
+	fcRootPassword
 	fcJump
 	fcIdentity
 	fcPubkeyFile
@@ -65,7 +66,7 @@ var (
 	tuiHint    = lipgloss.Color("8")  // dim gray
 
 	styTitle  = lipgloss.NewStyle().Bold(true).Foreground(tuiAccent)
-	styLabel  = lipgloss.NewStyle().Width(12).Foreground(tuiText)
+	styLabel  = lipgloss.NewStyle().Width(labelWidth).Foreground(tuiText)
 	styHelp   = lipgloss.NewStyle().Foreground(tuiHelpCol)
 	styHint   = lipgloss.NewStyle().Foreground(tuiHint)
 	styErr    = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
@@ -74,6 +75,10 @@ var (
 	styAccent = lipgloss.NewStyle().Foreground(tuiAccent)
 )
 
+// labelWidth is the form's label column, wide enough for "Root password" plus
+// a gap.
+const labelWidth = 15
+
 // stepOutputMax caps how many output lines are shown per step (live and when
 // committed to scrollback), so a chatty command never floods the screen.
 const stepOutputMax = 8
@@ -81,15 +86,16 @@ const stepOutputMax = 8
 // bootstrapModel is the guided TUI: a single-screen form that, on submit,
 // transitions in place to a live, scrolling provisioning log.
 type bootstrapModel struct {
-	hosts      textinput.Model
-	user       textinput.Model
-	password   textinput.Model
-	keys       textarea.Model
-	port       textinput.Model
-	adminUser  textinput.Model
-	jump       textinput.Model
-	identity   textinput.Model
-	pubkeyFile textinput.Model
+	hosts        textinput.Model
+	user         textinput.Model
+	password     textinput.Model
+	keys         textarea.Model
+	port         textinput.Model
+	adminUser    textinput.Model
+	rootPassword textinput.Model
+	jump         textinput.Model
+	identity     textinput.Model
+	pubkeyFile   textinput.Model
 
 	advanced bool
 	order    []focusable
@@ -142,17 +148,18 @@ func newBootstrapModel(f bootstrapFields, start func(bootstrapParams) <-chan tea
 	sp.Spinner = spinner.Dot
 
 	m := bootstrapModel{
-		hosts:      newTextField(f.hosts, "1.2.3.4 web1  (IPs, names, or ~/.ssh/config aliases)", false),
-		user:       newTextField(f.user, "bofh", false),
-		password:   newTextField(f.password, "blank = use SSH key", true),
-		keys:       keys,
-		port:       newTextField(f.port, "22", false),
-		adminUser:  newTextField(f.adminUser, "bofh", false),
-		jump:       newTextField(f.jump, "user@host#port  (optional)", false),
-		identity:   newTextField(f.identities, "~/.ssh/id_ed25519  (optional)", false),
-		pubkeyFile: newTextField(f.pubkeyFile, "/path/to/authorized_keys  (optional)", false),
-		spinner:    sp,
-		start:      start,
+		hosts:        newTextField(f.hosts, "1.2.3.4 web1  (IPs, names, or ~/.ssh/config aliases)", false),
+		user:         newTextField(f.user, "bofh", false),
+		password:     newTextField(f.password, "blank = use SSH key", true),
+		keys:         keys,
+		port:         newTextField(f.port, "22", false),
+		adminUser:    newTextField(f.adminUser, "bofh", false),
+		rootPassword: newTextField(f.rootPassword, "for su if sudo is not allowed, blank = same as Password", true),
+		jump:         newTextField(f.jump, "user@host#port  (optional)", false),
+		identity:     newTextField(f.identities, "~/.ssh/id_ed25519  (optional)", false),
+		pubkeyFile:   newTextField(f.pubkeyFile, "/path/to/authorized_keys  (optional)", false),
+		spinner:      sp,
+		start:        start,
 	}
 	m.rebuildOrder()
 	m.applyFocus()
@@ -162,7 +169,7 @@ func newBootstrapModel(f bootstrapFields, start func(bootstrapParams) <-chan tea
 func (m *bootstrapModel) rebuildOrder() {
 	m.order = []focusable{fcHosts, fcUser, fcPassword, fcKeys, fcAdvanced}
 	if m.advanced {
-		m.order = append(m.order, fcPort, fcAdminUser, fcJump, fcIdentity, fcPubkeyFile)
+		m.order = append(m.order, fcPort, fcAdminUser, fcRootPassword, fcJump, fcIdentity, fcPubkeyFile)
 	}
 	m.order = append(m.order, fcSubmit)
 	if m.focus >= len(m.order) {
@@ -182,6 +189,8 @@ func (m *bootstrapModel) field(fc focusable) *textinput.Model {
 		return &m.port
 	case fcAdminUser:
 		return &m.adminUser
+	case fcRootPassword:
+		return &m.rootPassword
 	case fcJump:
 		return &m.jump
 	case fcIdentity:
@@ -194,7 +203,7 @@ func (m *bootstrapModel) field(fc focusable) *textinput.Model {
 
 // applyFocus blurs every field, then focuses the current one.
 func (m *bootstrapModel) applyFocus() {
-	for _, fc := range []focusable{fcHosts, fcUser, fcPassword, fcPort, fcAdminUser, fcJump, fcIdentity, fcPubkeyFile} {
+	for _, fc := range []focusable{fcHosts, fcUser, fcPassword, fcPort, fcAdminUser, fcRootPassword, fcJump, fcIdentity, fcPubkeyFile} {
 		m.field(fc).Blur()
 	}
 	m.keys.Blur()
@@ -226,15 +235,16 @@ func (m *bootstrapModel) toggleAdvanced() {
 
 func (m bootstrapModel) toFields() bootstrapFields {
 	return bootstrapFields{
-		hosts:      m.hosts.Value(),
-		user:       m.user.Value(),
-		password:   m.password.Value(),
-		pubkeys:    m.keys.Value(),
-		port:       m.port.Value(),
-		adminUser:  m.adminUser.Value(),
-		jump:       m.jump.Value(),
-		identities: m.identity.Value(),
-		pubkeyFile: m.pubkeyFile.Value(),
+		hosts:        m.hosts.Value(),
+		user:         m.user.Value(),
+		password:     m.password.Value(),
+		pubkeys:      m.keys.Value(),
+		port:         m.port.Value(),
+		adminUser:    m.adminUser.Value(),
+		rootPassword: m.rootPassword.Value(),
+		jump:         m.jump.Value(),
+		identities:   m.identity.Value(),
+		pubkeyFile:   m.pubkeyFile.Value(),
 	}
 }
 
@@ -356,8 +366,8 @@ func (m bootstrapModel) updateProvisioning(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *bootstrapModel) resize() {
-	w := max(m.width-16, 20)
-	for _, fc := range []focusable{fcHosts, fcUser, fcPassword, fcPort, fcAdminUser, fcJump, fcIdentity, fcPubkeyFile} {
+	w := max(m.width-labelWidth-4, 20) // minus the pointer and the field prompt
+	for _, fc := range []focusable{fcHosts, fcUser, fcPassword, fcPort, fcAdminUser, fcRootPassword, fcJump, fcIdentity, fcPubkeyFile} {
 		m.field(fc).SetWidth(w)
 	}
 	m.keys.SetWidth(max(m.width-4, 24))
@@ -471,6 +481,7 @@ func (m bootstrapModel) viewForm() string {
 	if m.advanced {
 		row(fcPort, "Port", m.port.View())
 		row(fcAdminUser, "Admin user", m.adminUser.View())
+		row(fcRootPassword, "Root password", m.rootPassword.View())
 		row(fcJump, "Jump host", m.jump.View())
 		row(fcIdentity, "Identity", m.identity.View())
 		row(fcPubkeyFile, "Key file", m.pubkeyFile.View())
@@ -565,12 +576,13 @@ func provisionStream(a *app, p bootstrapParams) <-chan tea.Msg {
 				return
 			}
 			prov := bootstrap.Provisioner{
-				Exec:        client,
-				Sudo:        bootstrap.SudoWrapperFor(target.User, p.password),
-				AdminUser:   p.adminUser,
-				ConnectUser: target.User,
-				OnStep:      func(s string) { ch <- provisionLogMsg{host, s, true} },
-				OnOutput:    func(l string) { ch <- provisionLogMsg{host, l, false} },
+				Exec:         client,
+				AdminUser:    p.adminUser,
+				ConnectUser:  target.User,
+				Password:     p.password,
+				RootPassword: p.rootPassword,
+				OnStep:       func(s string) { ch <- provisionLogMsg{host, s, true} },
+				OnOutput:     func(l string) { ch <- provisionLogMsg{host, l, false} },
 			}
 			err = prov.Run(p.keys)
 			client.Close()

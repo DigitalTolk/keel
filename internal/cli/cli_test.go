@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -18,13 +19,46 @@ import (
 
 type fakeSession struct {
 	cmds    []string
+	stdins  []string
 	closed  bool
 	execErr error
+	respond func(cmd string) error // optional: per-command result, overrides execErr
 }
 
-func (s *fakeSession) Exec(cmd string) (string, error) {
+func (s *fakeSession) Exec(cmd, stdin string) (string, error) {
 	s.cmds = append(s.cmds, cmd)
+	s.stdins = append(s.stdins, stdin)
+	if s.respond != nil {
+		return "", s.respond(cmd)
+	}
 	return "", s.execErr
+}
+
+// notASudoer fakes the reported host: the user is not in the sudoers file,
+// while su (given the right root password) works.
+func notASudoer(rootPassword string, sess *fakeSession) func(cmd string) error {
+	return func(cmd string) error {
+		switch {
+		case strings.Contains(cmd, "sudo"):
+			return errors.New("Process exited with status 1: customer is not in the sudoers file.")
+		case strings.HasPrefix(cmd, "su "):
+			if sess.stdins[len(sess.stdins)-1] != rootPassword+"\n" {
+				return errors.New("Process exited with status 1")
+			}
+		}
+		return nil
+	}
+}
+
+// suStdin returns what the su commands were given on stdin.
+func suStdin(sess *fakeSession) []string {
+	var in []string
+	for i, cmd := range sess.cmds {
+		if strings.HasPrefix(cmd, "su ") {
+			in = append(in, sess.stdins[i])
+		}
+	}
+	return in
 }
 func (s *fakeSession) Close() error { s.closed = true; return nil }
 
@@ -87,6 +121,77 @@ func TestBootstrapRun(t *testing.T) {
 	}
 	if len(sess.cmds) < 4 {
 		t.Errorf("expected multiple provisioning steps, got %d: %v", len(sess.cmds), sess.cmds)
+	}
+}
+
+// TestBootstrapFallsBackToSuWithoutLeakingThePassword reproduces the reported
+// run: a user who is not in the sudoers file, with a password. keel reaches
+// root through su using the same password, and the password is only ever
+// written to stdin, never onto a command line.
+func TestBootstrapFallsBackToSuWithoutLeakingThePassword(t *testing.T) {
+	const secret = "Edzfvbsvo4el!"
+	t.Setenv("KEEL_SSH_PASSWORD", secret)
+	a, _ := newTestApp()
+	sess := &fakeSession{}
+	sess.respond = notASudoer(secret, sess)
+	a.dialer = func(ssh.Target, ssh.DialOptions) (SSHSession, error) { return sess, nil }
+
+	if err := runCmd(a, "bootstrap", "-u", "customer", "--pubkey", "ssh-ed25519 K u@h", "web1"); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	for _, cmd := range sess.cmds {
+		if strings.Contains(cmd, secret) {
+			t.Errorf("password leaked onto command line %q", cmd)
+		}
+	}
+	if in := suStdin(sess); len(in) < 2 || in[0] != secret+"\n" {
+		t.Errorf("su should be given the ssh password on stdin, got %q", in)
+	}
+}
+
+func TestBootstrapAskRootPass(t *testing.T) {
+	t.Setenv("KEEL_SSH_PASSWORD", "userpw")
+	a, _ := newTestApp()
+	sess := &fakeSession{}
+	sess.respond = notASudoer("rootpw", sess)
+	a.dialer = func(ssh.Target, ssh.DialOptions) (SSHSession, error) { return sess, nil }
+	var prompts []string
+	a.readPassword = func(prompt string) (string, error) { prompts = append(prompts, prompt); return "rootpw", nil }
+
+	if err := runCmd(a, "bootstrap", "-u", "customer", "--ask-root-pass", "web1"); err != nil {
+		t.Fatalf("bootstrap --ask-root-pass: %v", err)
+	}
+	if len(prompts) != 1 || !strings.Contains(prompts[0], "root password") {
+		t.Errorf("--ask-root-pass should prompt for the root password once, prompts: %q", prompts)
+	}
+	if in := suStdin(sess); len(in) == 0 || in[0] != "rootpw\n" {
+		t.Errorf("su should be given the root password, got %q", in)
+	}
+}
+
+func TestBootstrapAskRootPassError(t *testing.T) {
+	a, _ := newTestApp()
+	a.dialer = func(ssh.Target, ssh.DialOptions) (SSHSession, error) { return &fakeSession{}, nil }
+	a.readPassword = func(string) (string, error) { return "", io.ErrUnexpectedEOF }
+
+	if err := runCmd(a, "bootstrap", "-u", "customer", "--ask-root-pass", "web1"); err == nil {
+		t.Fatal("a failed root password prompt should stop the run")
+	}
+}
+
+func TestBootstrapRootPasswordFromEnv(t *testing.T) {
+	t.Setenv("KEEL_SSH_PASSWORD", "userpw")
+	t.Setenv("KEEL_ROOT_PASSWORD", "rootpw")
+	a, _ := newTestApp()
+	sess := &fakeSession{}
+	sess.respond = notASudoer("rootpw", sess)
+	a.dialer = func(ssh.Target, ssh.DialOptions) (SSHSession, error) { return sess, nil }
+
+	if err := runCmd(a, "bootstrap", "-u", "customer", "web1"); err != nil {
+		t.Fatalf("bootstrap with KEEL_ROOT_PASSWORD: %v", err)
+	}
+	if in := suStdin(sess); len(in) == 0 || in[0] != "rootpw\n" {
+		t.Errorf("su should be given KEEL_ROOT_PASSWORD, got %q", in)
 	}
 }
 

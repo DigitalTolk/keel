@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"testing"
 
@@ -26,8 +27,9 @@ func dialTarget(t *testing.T, addr, user string) Target {
 	return tgt
 }
 
-// execHandler runs a command on the test server and returns stdout + exit code.
-type execHandler func(cmd string) (stdout string, exitCode int)
+// execHandler runs a command on the test server, given everything the client
+// wrote to its stdin, and returns stdout + exit code.
+type execHandler func(cmd, stdin string) (stdout string, exitCode int)
 
 // startTestServer starts an in-process SSH server on a random localhost port.
 // It accepts password auth for user "bofh" / password "pw" and dispatches
@@ -108,9 +110,10 @@ func serveConn(conn net.Conn, cfg *gossh.ServerConfig, handler execHandler) {
 				if req.WantReply {
 					_ = req.Reply(true, nil)
 				}
+				stdin, _ := io.ReadAll(ch) // until the client closes its stdin
 				stdout, code := "", 0
 				if handler != nil {
-					stdout, code = handler(payload.Command)
+					stdout, code = handler(payload.Command, string(stdin))
 				}
 				_, _ = ch.Write([]byte(stdout))
 				statusPayload := gossh.Marshal(struct{ Status uint32 }{uint32(code)})

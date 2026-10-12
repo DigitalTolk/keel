@@ -15,5 +15,12 @@ RUN mkdir -p /run/sshd \
  && sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
  && sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
 
+# Two non-root users for the privilege paths: deploy may sudo with its password;
+# customer is not in the sudoers file and reaches root through su.
+RUN useradd -m -s /bin/bash -G sudo deploy \
+ && echo 'deploy:deploypass' | chpasswd \
+ && useradd -m -s /bin/bash customer \
+ && echo 'customer:customerpass' | chpasswd
+
 EXPOSE 22
 CMD ["/usr/sbin/sshd", "-D", "-e"]

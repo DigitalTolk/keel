@@ -48,7 +48,7 @@ func TestNewBootstrapFieldsSeedsDefaults(t *testing.T) {
 func TestBootstrapFieldsToParams(t *testing.T) {
 	f := bootstrapFields{
 		hosts: "web1, web2", user: "root", port: "2222", adminUser: "ops",
-		jump: "j@h#22", password: "pw",
+		jump: "j@h#22", password: "pw", rootPassword: "rootpw",
 		identities: "/k1 /k2", pubkeys: "ssh-ed25519 ONE a@b\n\nssh-ed25519 TWO c@d\n",
 	}
 	p, err := f.toParams()
@@ -63,6 +63,9 @@ func TestBootstrapFieldsToParams(t *testing.T) {
 	}
 	if p.password != "pw" {
 		t.Errorf("a filled password should select password auth, got %q", p.password)
+	}
+	if p.rootPassword != "rootpw" {
+		t.Errorf("root password should be carried for su, got %q", p.rootPassword)
 	}
 	if !slices.Equal(p.identities, []string{"/k1", "/k2"}) {
 		t.Errorf("identities = %v", p.identities)
@@ -193,7 +196,7 @@ func TestModelKeysEnterInsertsNewline(t *testing.T) {
 func TestModelAdvancedToggleExpandsAndCollapses(t *testing.T) {
 	m := focusOn(newBootstrapModel(bootstrapFields{}, nil), fcAdvanced)
 	m = step(m, key("space")) // expand
-	if !m.advanced || !slices.Contains(m.order, fcPort) || len(m.order) != 11 {
+	if !m.advanced || !slices.Contains(m.order, fcRootPassword) || len(m.order) != 12 {
 		t.Fatalf("space should reveal advanced fields, order = %v", m.order)
 	}
 	m = focusOn(m, fcAdvanced)
@@ -357,6 +360,29 @@ func TestModelWindowSizeAndViews(t *testing.T) {
 	}
 }
 
+// TestModelRootPasswordField verifies the advanced options offer a masked root
+// password, labelled on one line, that is submitted with the rest.
+func TestModelRootPasswordField(t *testing.T) {
+	m := newBootstrapModel(bootstrapFields{hosts: "web1"}, nil)
+	m = step(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m.advanced = true
+	m.rebuildOrder()
+	m = focusOn(m, fcRootPassword)
+	for _, r := range "rootpw" {
+		m = step(m, key(string(r)))
+	}
+	view := m.viewForm()
+	if !strings.Contains(view, "Root password") {
+		t.Errorf("advanced options should show a Root password row on one line:\n%s", view)
+	}
+	if strings.Contains(view, "rootpw") {
+		t.Error("the root password should be masked")
+	}
+	if got := m.toFields().rootPassword; got != "rootpw" {
+		t.Errorf("root password not collected, got %q", got)
+	}
+}
+
 func TestModelViewDispatchAndHelpers(t *testing.T) {
 	m := newBootstrapModel(bootstrapFields{hosts: "web1"}, nil)
 	if m.View().Content == "" || !m.View().AltScreen {
@@ -498,6 +524,34 @@ func TestProvisionStreamSuccess(t *testing.T) {
 	}
 	if !hasReady {
 		t.Error("expected a host-ready log message")
+	}
+}
+
+// TestProvisionStreamFallsBackToSu verifies the guided flow reaches root
+// through su with the root password, and shows that it did.
+func TestProvisionStreamFallsBackToSu(t *testing.T) {
+	a, _ := newTestApp()
+	sess := &fakeSession{}
+	sess.respond = notASudoer("rootpw", sess)
+	a.dialer = func(ssh.Target, ssh.DialOptions) (SSHSession, error) { return sess, nil }
+	msgs := drain(provisionStream(a, bootstrapParams{
+		hosts: []string{"web1"}, user: "customer", port: 22, adminUser: "bofh",
+		password: "userpw", rootPassword: "rootpw",
+	}))
+	if d, ok := msgs[len(msgs)-1].(provisionDoneMsg); !ok || d.err != nil {
+		t.Fatalf("expected clean done, got %#v", msgs[len(msgs)-1])
+	}
+	reported := false
+	for _, m := range msgs {
+		if s, ok := m.(provisionLogMsg); ok && !s.header && s.line == "using su" {
+			reported = true
+		}
+	}
+	if !reported {
+		t.Error("expected the su fallback to be shown")
+	}
+	if in := suStdin(sess); len(in) == 0 || in[0] != "rootpw\n" {
+		t.Errorf("su should be given the root password, got %q", in)
 	}
 }
 
