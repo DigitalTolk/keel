@@ -71,7 +71,12 @@ real implementation, and substitute fakes in tests. Existing seams:
   terminal) is left uncovered. `bootstrap.Provisioner` takes an optional `OnStep`
   callback so the TUI can render per-step progress.
 - `bootstrap.Executor` — the remote-command interface the `Provisioner` runs over
-  (`ssh.Client` satisfies it; tests use a fake).
+  (`ssh.Client` satisfies it; tests use a fake). Every call takes the command and
+  the input for its stdin.
+- `bootstrap.Escalator` (`AsRoot`, `ViaSudo`, `ViaSu`) turns a command into a
+  `Command` (line + stdin) that runs as root. Left nil, the `Provisioner` works it
+  out on the host before changing anything: root runs directly, otherwise sudo is
+  tried with `true`, then su with `RootPassword` (blank = `Password`).
 - `ssh` is tested against an in-process `crypto/ssh` server.
 
 Logging is the standard library **`log/slog`** (structured; `--log-format text|json`
@@ -109,9 +114,12 @@ time — route it through a seam so it can be faked.
   the legacy env-var names (`SSH_USER`, `SSH_PORT`, `SSH_JUMP_HOST`, `KEEL_LOG_FORMAT`)
   as fallbacks. Defaults: ssh user `bofh`, port 22.
 - **Secrets:** the bootstrap/sudo password is supplied interactively (`--ask-pass`) or
-  via `KEEL_SSH_PASSWORD`; never inline it. Never place a password in `argv` — remote
-  commands are base64-encoded over SSH so secrets and shell metacharacters never hit
-  the visible command line. Never log a secret.
+  via `KEEL_SSH_PASSWORD`; root's password for the su fallback via `--ask-root-pass` or
+  `KEEL_ROOT_PASSWORD` (default: the ssh password). Never inline them. A password
+  travels only on the remote command's stdin (`bootstrap.Command.Stdin`), never in
+  the command line: that is visible in the host's process list and used to be echoed
+  into error messages. Commands are base64-encoded so shell metacharacters survive,
+  and `ssh` errors never repeat the command. Never log a secret.
 - **Errors:** return wrapped `error`s with context (which host, which step); the root
   command prints one clean line to stderr and exits non-zero. No silent failures.
 - **Go style:** explicit return types, constructor injection, `gofmt`/`go vet` clean,
@@ -143,8 +151,11 @@ goreleaser build --snapshot --clean
 
 The `e2e` package (build tag `e2e`, gated by `KEEL_E2E_SSH_ADDR`) provisions a real
 Ubuntu sshd container end-to-end and asserts the admin user, a `visudo`-valid sudoers
-drop-in, and `authorized_keys` all landed. It is excluded from the normal unit run and
-from the coverage measurement; CI runs it as a dedicated job.
+drop-in, and `authorized_keys` all landed. It also provisions as `deploy` (sudo with a
+password) and `customer` (not a sudoer, so su with root's password), users the image
+creates, and checks a refused root password leaks neither password. It is excluded
+from the normal unit run and from the coverage measurement; CI runs it as a dedicated
+job.
 
 ---
 

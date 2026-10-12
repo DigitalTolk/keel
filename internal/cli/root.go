@@ -19,7 +19,7 @@ import (
 // SSHSession is the subset of *ssh.Client that the bootstrap commands need.
 // Defining it here lets tests substitute a fake instead of a live connection.
 type SSHSession interface {
-	Exec(cmd string) (string, error)
+	Exec(cmd, stdin string) (string, error)
 	Close() error
 }
 

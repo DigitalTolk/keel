@@ -66,6 +66,7 @@ func newBootstrapCmd(a *app) *cobra.Command {
 		port       int
 		jump       string
 		askPass    bool
+		askRoot    bool
 		identities []string
 		pubkeys    []string
 		pubkeyFile string
@@ -133,6 +134,16 @@ func newBootstrapCmd(a *app) *cobra.Command {
 			case os.Getenv("KEEL_SSH_PASSWORD") != "":
 				p.password = os.Getenv("KEEL_SSH_PASSWORD")
 			}
+			switch {
+			case askRoot:
+				pw, err := a.readPassword("root password for su, if sudo is not allowed (hidden, blank = same as the ssh password): ")
+				if err != nil {
+					return err
+				}
+				p.rootPassword = pw
+			case os.Getenv("KEEL_ROOT_PASSWORD") != "":
+				p.rootPassword = os.Getenv("KEEL_ROOT_PASSWORD")
+			}
 			if len(p.hosts) == 0 {
 				return errors.New("no HOST given: pass HOST arguments, or run keel in a terminal for guided setup")
 			}
@@ -143,6 +154,7 @@ func newBootstrapCmd(a *app) *cobra.Command {
 	cmd.Flags().IntVarP(&port, "port", "p", 0, "ssh port (default from config: 22)")
 	cmd.Flags().StringVarP(&jump, "jump", "J", "", "jump host (user@host#port)")
 	cmd.Flags().BoolVar(&askPass, "ask-pass", false, "prompt for ssh/sudo password (hidden); KEEL_SSH_PASSWORD env is used otherwise")
+	cmd.Flags().BoolVar(&askRoot, "ask-root-pass", false, "prompt for root's password, for su when the user may not use sudo (default: the ssh password); KEEL_ROOT_PASSWORD env is used otherwise")
 	cmd.Flags().StringArrayVarP(&identities, "identity", "i", nil, "private key file for ssh auth (repeatable)")
 	cmd.Flags().StringArrayVar(&pubkeys, "pubkey", nil, "authorized public key to install (repeatable)")
 	cmd.Flags().StringVar(&pubkeyFile, "pubkey-file", "", "file containing public keys, one per line")
@@ -151,14 +163,15 @@ func newBootstrapCmd(a *app) *cobra.Command {
 }
 
 type bootstrapParams struct {
-	hosts      []string
-	user       string
-	port       int
-	jump       string
-	password   string
-	identities []string
-	keys       []string
-	adminUser  string
+	hosts        []string
+	user         string
+	port         int
+	jump         string
+	password     string
+	rootPassword string // for su when the user may not use sudo; blank = password
+	identities   []string
+	keys         []string
+	adminUser    string
 }
 
 // runBootstrap provisions each host directly (non-interactive path). The
@@ -174,10 +187,11 @@ func runBootstrap(a *app, p bootstrapParams) error {
 		}
 
 		prov := bootstrap.Provisioner{
-			Exec:        client,
-			Sudo:        bootstrap.SudoWrapperFor(target.User, p.password),
-			AdminUser:   p.adminUser,
-			ConnectUser: target.User,
+			Exec:         client,
+			AdminUser:    p.adminUser,
+			ConnectUser:  target.User,
+			Password:     p.password,
+			RootPassword: p.rootPassword,
 		}
 		if err := prov.Run(p.keys); err != nil {
 			client.Close()
@@ -236,15 +250,16 @@ func firstPositive(vals ...int) int {
 // bootstrapFields holds the string-typed values the TUI form binds to. It maps
 // to a bootstrapParams via toParams once submitted.
 type bootstrapFields struct {
-	hosts      string
-	user       string
-	password   string // blank => SSH-key auth
-	pubkeys    string // authorized keys to install, one per line
-	port       string
-	adminUser  string
-	jump       string
-	identities string
-	pubkeyFile string
+	hosts        string
+	user         string
+	password     string // blank => SSH-key auth
+	pubkeys      string // authorized keys to install, one per line
+	port         string
+	adminUser    string
+	rootPassword string // for su; blank => same as password
+	jump         string
+	identities   string
+	pubkeyFile   string
 }
 
 // newBootstrapFields seeds the form with any values already supplied on the
@@ -310,13 +325,14 @@ func (f bootstrapFields) toParams() (bootstrapParams, error) {
 	}
 
 	p := bootstrapParams{
-		hosts:     hosts,
-		user:      strings.TrimSpace(f.user),
-		port:      port,
-		jump:      strings.TrimSpace(f.jump),
-		adminUser: admin,
-		keys:      keys,
-		password:  f.password,
+		hosts:        hosts,
+		user:         strings.TrimSpace(f.user),
+		port:         port,
+		jump:         strings.TrimSpace(f.jump),
+		adminUser:    admin,
+		keys:         keys,
+		password:     f.password,
+		rootPassword: f.rootPassword,
 	}
 	if s := strings.TrimSpace(f.identities); s != "" {
 		p.identities = splitList(s)

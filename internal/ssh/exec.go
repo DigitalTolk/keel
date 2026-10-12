@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -124,9 +125,11 @@ func Dial(t Target, opts DialOptions) (*Client, error) {
 	return &Client{conn: gossh.NewClient(ncc, chans, reqs), jump: jumpConn}, nil
 }
 
-// Exec runs a single command and returns its combined trimmed stdout. A
-// non-zero exit status is returned as an error including any stderr output.
-func (c *Client) Exec(cmd string) (string, error) {
+// Exec runs a single command with stdin as its standard input and returns its
+// trimmed stdout. A non-zero exit status is returned as an error including any
+// stderr output. Errors never repeat the command: it can carry anything the
+// caller put in it, and the caller's own wrapping names the step that failed.
+func (c *Client) Exec(cmd, stdin string) (string, error) {
 	session, err := c.conn.NewSession()
 	if err != nil {
 		return "", fmt.Errorf("new session: %w", err)
@@ -134,31 +137,34 @@ func (c *Client) Exec(cmd string) (string, error) {
 	defer session.Close()
 
 	var stdout, stderr bytes.Buffer
+	session.Stdin = strings.NewReader(stdin)
 	session.Stdout = &stdout
 	session.Stderr = &stderr
 
 	if err := session.Run(cmd); err != nil {
-		return "", fmt.Errorf("command %q failed: %w: %s", cmd, err, trimNL(stderr.String()))
+		if msg := trimNL(stderr.String()); msg != "" {
+			return "", fmt.Errorf("%w: %s", err, msg)
+		}
+		return "", err
 	}
 	return trimNL(stdout.String()), nil
 }
 
-// ExecStream runs a single command, streaming its combined stdout+stderr to w
-// as it arrives (rather than buffering it). A non-zero exit status is returned
-// as an error. Used to surface live host output during provisioning.
-func (c *Client) ExecStream(cmd string, w io.Writer) error {
+// ExecStream runs a single command with stdin as its standard input, streaming
+// its combined stdout+stderr to w as it arrives (rather than buffering it). A
+// non-zero exit status is returned as an error, which, as with Exec, leaves the
+// command out. Used to surface live host output during provisioning.
+func (c *Client) ExecStream(cmd, stdin string, w io.Writer) error {
 	session, err := c.conn.NewSession()
 	if err != nil {
 		return fmt.Errorf("new session: %w", err)
 	}
 	defer session.Close()
 
+	session.Stdin = strings.NewReader(stdin)
 	session.Stdout = w
 	session.Stderr = w
-	if err := session.Run(cmd); err != nil {
-		return fmt.Errorf("command %q failed: %w", cmd, err)
-	}
-	return nil
+	return session.Run(cmd)
 }
 
 // Close releases the connection and any jump-host connection.

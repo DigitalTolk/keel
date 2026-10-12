@@ -44,7 +44,7 @@ func TestDialWithKeyFile(t *testing.T) {
 		t.Fatalf("Dial with key: %v", err)
 	}
 	defer client.Close()
-	if out, err := client.Exec("whoami"); err != nil || out != "ran: whoami" {
+	if out, err := client.Exec("whoami", ""); err != nil || out != "ran: whoami" {
 		t.Fatalf("Exec over key auth: out=%q err=%v", out, err)
 	}
 }
@@ -147,7 +147,7 @@ func TestDialThroughJumpHost(t *testing.T) {
 	}
 	defer client.Close()
 
-	out, err := client.Exec("hostname")
+	out, err := client.Exec("hostname", "")
 	if err != nil || out != "ran: hostname" {
 		t.Fatalf("Exec via jump host: out=%q err=%v", out, err)
 	}
@@ -218,7 +218,7 @@ func TestDialUsesDefaultKeyFromHome(t *testing.T) {
 		t.Fatalf("Dial with default key: %v", err)
 	}
 	defer client.Close()
-	if _, err := client.Exec("id"); err != nil {
+	if _, err := client.Exec("id", ""); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 }
@@ -297,7 +297,7 @@ func TestExecStderrIncludedInError(t *testing.T) {
 	}
 	defer client.Close()
 
-	_, err = client.Exec("failing-cmd")
+	_, err = client.Exec("failing-cmd", "")
 	if err == nil {
 		t.Fatal("expected error for failing command")
 	}
@@ -306,8 +306,29 @@ func TestExecStderrIncludedInError(t *testing.T) {
 	}
 }
 
+// TestExecErrorsOmitTheCommand verifies a failure never repeats the command: it
+// can carry anything the caller put in it, and the caller's own wrapping says
+// which step failed.
+func TestExecErrorsOmitTheCommand(t *testing.T) {
+	addr := startStderrServer(t)
+	tgt := dialTarget(t, addr, "bofh")
+	client, err := Dial(tgt, DialOptions{Password: "pw", Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer client.Close()
+
+	const cmd = "echo 'hunter2' | sudo -S true"
+	if _, err := client.Exec(cmd, ""); err == nil || strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("Exec error should not repeat the command, got %v", err)
+	}
+	if err := client.ExecStream(cmd, "", io.Discard); err == nil || strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("ExecStream error should not repeat the command, got %v", err)
+	}
+}
+
 func TestExecStreamWritesOutput(t *testing.T) {
-	addr, _ := startTestServer(t, func(cmd string) (string, int) { return "out-line\n", 0 })
+	addr, _ := startTestServer(t, func(cmd, stdin string) (string, int) { return "out-line\n", 0 })
 	tgt := dialTarget(t, addr, "bofh")
 	client, err := Dial(tgt, DialOptions{Password: "pw", Timeout: 5 * time.Second})
 	if err != nil {
@@ -316,7 +337,7 @@ func TestExecStreamWritesOutput(t *testing.T) {
 	defer client.Close()
 
 	var sb strings.Builder
-	if err := client.ExecStream("ls", &sb); err != nil {
+	if err := client.ExecStream("ls", "", &sb); err != nil {
 		t.Fatalf("ExecStream: %v", err)
 	}
 	if !strings.Contains(sb.String(), "out-line") {
@@ -324,8 +345,8 @@ func TestExecStreamWritesOutput(t *testing.T) {
 	}
 }
 
-func TestExecStreamNonZeroIsError(t *testing.T) {
-	addr, _ := startTestServer(t, func(cmd string) (string, int) { return "x", 2 })
+func TestExecStreamWritesStdin(t *testing.T) {
+	addr, _ := startTestServer(t, func(cmd, stdin string) (string, int) { return "read: " + stdin, 0 })
 	tgt := dialTarget(t, addr, "bofh")
 	client, err := Dial(tgt, DialOptions{Password: "pw", Timeout: 5 * time.Second})
 	if err != nil {
@@ -333,7 +354,25 @@ func TestExecStreamNonZeroIsError(t *testing.T) {
 	}
 	defer client.Close()
 
-	if err := client.ExecStream("boom", io.Discard); err == nil {
+	var sb strings.Builder
+	if err := client.ExecStream("sudo -S true", "s3cret\n", &sb); err != nil {
+		t.Fatalf("ExecStream: %v", err)
+	}
+	if sb.String() != "read: s3cret\n" {
+		t.Errorf("ExecStream output = %q, want the stdin echoed back", sb.String())
+	}
+}
+
+func TestExecStreamNonZeroIsError(t *testing.T) {
+	addr, _ := startTestServer(t, func(cmd, stdin string) (string, int) { return "x", 2 })
+	tgt := dialTarget(t, addr, "bofh")
+	client, err := Dial(tgt, DialOptions{Password: "pw", Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer client.Close()
+
+	if err := client.ExecStream("boom", "", io.Discard); err == nil {
 		t.Fatal("ExecStream: want error on non-zero exit, got nil")
 	}
 }

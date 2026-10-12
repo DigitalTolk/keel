@@ -12,10 +12,11 @@ import (
 // streams side-effect commands through ExecStream when OnOutput is set.
 type streamExec struct {
 	cmds   []string
+	stdins []string
 	output string
 }
 
-func (s *streamExec) Exec(cmd string) (string, error) {
+func (s *streamExec) Exec(cmd, stdin string) (string, error) {
 	s.cmds = append(s.cmds, cmd)
 	if strings.Contains(cmd, "id -u") {
 		return "1000", nil // user exists
@@ -23,8 +24,9 @@ func (s *streamExec) Exec(cmd string) (string, error) {
 	return "", nil
 }
 
-func (s *streamExec) ExecStream(cmd string, w io.Writer) error {
+func (s *streamExec) ExecStream(cmd, stdin string, w io.Writer) error {
 	s.cmds = append(s.cmds, cmd)
+	s.stdins = append(s.stdins, stdin)
 	_, _ = io.WriteString(w, s.output)
 	return nil
 }
@@ -36,7 +38,7 @@ func TestProvisionStreamsOutput(t *testing.T) {
 	se := &streamExec{output: "Reading package lists...\nBuilding dependency tree\nDone"}
 	var out []string
 	p := Provisioner{
-		Exec: se, Sudo: func(c string) string { return c }, AdminUser: "bofh", ConnectUser: "root",
+		Exec: se, Escalate: plain, AdminUser: "bofh", ConnectUser: "root",
 		OnOutput: func(l string) { out = append(out, l) },
 	}
 	if err := p.Run([]string{"ssh-ed25519 K a@b"}); err != nil {
@@ -45,6 +47,27 @@ func TestProvisionStreamsOutput(t *testing.T) {
 	for _, want := range []string{"Reading package lists...", "Building dependency tree", "Done"} {
 		if !slices.Contains(out, want) {
 			t.Errorf("streamed output missing %q: %v", want, out)
+		}
+	}
+}
+
+// TestProvisionStreamsEscalationInput verifies streamed privileged commands
+// are sent with the escalation's input too.
+func TestProvisionStreamsEscalationInput(t *testing.T) {
+	se := &streamExec{}
+	p := Provisioner{
+		Exec: se, Escalate: ViaSudo("pw"), AdminUser: "bofh", ConnectUser: "deploy",
+		OnOutput: func(string) {},
+	}
+	if err := p.Run([]string{"ssh-ed25519 K a@b"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(se.stdins) == 0 {
+		t.Fatal("expected streamed commands")
+	}
+	for i, in := range se.stdins {
+		if in != "pw\n" {
+			t.Errorf("streamed command %q sent stdin %q, want the password", se.cmds[i], in)
 		}
 	}
 }
@@ -60,7 +83,7 @@ func TestProvisionOnStepCallback(t *testing.T) {
 	}}
 	var steps []string
 	p := Provisioner{
-		Exec: exec, Sudo: func(c string) string { return c }, AdminUser: "bofh", ConnectUser: "root",
+		Exec: exec, Escalate: plain, AdminUser: "bofh", ConnectUser: "root",
 		OnStep: func(s string) { steps = append(steps, s) },
 	}
 	if err := p.Run([]string{"ssh-ed25519 K a@b"}); err != nil {
@@ -74,41 +97,6 @@ func TestProvisionOnStepCallback(t *testing.T) {
 	}
 }
 
-// TestProvisionSudoNilLeavesCommandsUnwrapped verifies that when Sudo is nil the
-// sudo() helper returns the command unchanged (identity branch), so the raw
-// commands are issued to the Executor without any sudo prefix.
-func TestProvisionSudoNilLeavesCommandsUnwrapped(t *testing.T) {
-	exec := &fakeExec{respond: func(cmd string) (string, error) {
-		if strings.Contains(cmd, "id -u bofh") {
-			return "1000", nil // user exists, so no useradd
-		}
-		return "", nil
-	}}
-	p := Provisioner{Exec: exec, Sudo: nil, AdminUser: "bofh", ConnectUser: "root"}
-
-	if err := p.Run([]string{"ssh-ed25519 KEY a@b"}); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	// With Sudo==nil the apt command must be issued verbatim with no wrapping.
-	wantApt := AptInstallCommand(BasePackages)
-	found := false
-	for _, c := range exec.cmds {
-		if c == wantApt {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected raw apt command %q to be issued unwrapped; commands: %v", wantApt, exec.cmds)
-	}
-	for _, c := range exec.cmds {
-		if strings.HasPrefix(c, "sudo ") {
-			t.Errorf("no command should be sudo-wrapped when Sudo is nil; got %q", c)
-		}
-	}
-}
-
 // TestProvisionDefaultsAdminUserWhenEmpty verifies that an empty AdminUser falls
 // back to DefaultAdminUser.
 func TestProvisionDefaultsAdminUserWhenEmpty(t *testing.T) {
@@ -118,7 +106,7 @@ func TestProvisionDefaultsAdminUserWhenEmpty(t *testing.T) {
 		}
 		return "", nil
 	}}
-	p := Provisioner{Exec: exec, Sudo: func(c string) string { return c }, ConnectUser: "root"}
+	p := Provisioner{Exec: exec, Escalate: plain, ConnectUser: "root"}
 
 	if err := p.Run(nil); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -132,7 +120,7 @@ func TestProvisionDefaultsAdminUserWhenEmpty(t *testing.T) {
 // branch: no `id -u` probe and no useradd is attempted.
 func TestProvisionSkipsUseraddWhenConnectedAsAdmin(t *testing.T) {
 	exec := &fakeExec{}
-	p := Provisioner{Exec: exec, Sudo: func(c string) string { return "sudo " + c }, AdminUser: "bofh", ConnectUser: "bofh"}
+	p := Provisioner{Exec: exec, Escalate: sudoPrefix, AdminUser: "bofh", ConnectUser: "bofh"}
 
 	if err := p.Run([]string{"ssh-ed25519 KEY a@b"}); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -157,7 +145,7 @@ func TestProvisionSkipsBlankAuthorizedKeys(t *testing.T) {
 		}
 		return "", nil
 	}}
-	p := Provisioner{Exec: exec, Sudo: func(c string) string { return c }, AdminUser: "bofh", ConnectUser: "root"}
+	p := Provisioner{Exec: exec, Escalate: plain, AdminUser: "bofh", ConnectUser: "root"}
 
 	keys := []string{"", "   ", "ssh-ed25519 REALKEY a@b", "\t\n"}
 	if err := p.Run(keys); err != nil {
@@ -235,7 +223,7 @@ func TestProvisionErrorPropagation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			exec := failOn(tc.failSubstr, tc.userExists)
-			p := Provisioner{Exec: exec, Sudo: func(c string) string { return c }, AdminUser: "bofh", ConnectUser: "root"}
+			p := Provisioner{Exec: exec, Escalate: plain, AdminUser: "bofh", ConnectUser: "root"}
 
 			err := p.Run([]string{"ssh-ed25519 KEY a@b"})
 			if err == nil {

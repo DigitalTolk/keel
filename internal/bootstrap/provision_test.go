@@ -3,23 +3,34 @@ package bootstrap
 import (
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
 
-// fakeExec records commands and returns programmable responses.
+// fakeExec records commands (and what was written to their stdin) and returns
+// programmable responses.
 type fakeExec struct {
 	cmds    []string
+	stdins  []string
 	respond func(cmd string) (string, error)
 }
 
-func (f *fakeExec) Exec(cmd string) (string, error) {
+func (f *fakeExec) Exec(cmd, stdin string) (string, error) {
 	f.cmds = append(f.cmds, cmd)
+	f.stdins = append(f.stdins, stdin)
 	if f.respond != nil {
 		return f.respond(cmd)
 	}
 	return "", nil
 }
+
+// plain is an Escalator that leaves commands as they are, so tests can match
+// the raw provisioning commands.
+func plain(cmd string) Command { return Command{Line: cmd} }
+
+// sudoPrefix is an Escalator that marks commands as elevated in a readable way.
+func sudoPrefix(cmd string) Command { return Command{Line: "sudo " + cmd} }
 
 func (f *fakeExec) issued(substr string) bool {
 	for _, c := range f.cmds {
@@ -75,33 +86,32 @@ func TestAppendAuthorizedKeyIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestSudoWrapperRootRunsDirectly(t *testing.T) {
-	w := SudoWrapperFor("root", "")
-	got := w("apt-get update")
-	if strings.Contains(got, "sudo") {
-		t.Errorf("root wrapper should not use sudo, got %q", got)
-	}
-	if !strings.Contains(got, "base64 -d | bash") {
-		t.Errorf("root wrapper should pipe decoded command to bash, got %q", got)
-	}
-}
+// TestProvisionWritesEscalationInputToStdin verifies privileged commands are
+// sent with the escalation's input, and the password never reaches a command
+// line.
+func TestProvisionWritesEscalationInputToStdin(t *testing.T) {
+	const secret = "Edzfvbsvo4el!"
+	exec := &fakeExec{respond: func(cmd string) (string, error) {
+		if strings.Contains(cmd, "id -u bofh") {
+			return "1000", nil
+		}
+		return "", nil
+	}}
+	p := Provisioner{Exec: exec, Escalate: ViaSudo(secret), AdminUser: "bofh", ConnectUser: "deploy"}
 
-func TestSudoWrapperPasswordlessUsesSudo(t *testing.T) {
-	w := SudoWrapperFor("deploy", "")
-	got := w("apt-get update")
-	if !strings.Contains(got, "sudo bash") {
-		t.Errorf("passwordless wrapper should use sudo bash, got %q", got)
+	if err := p.Run([]string{"ssh-ed25519 KEY a@b"}); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
-}
-
-func TestSudoWrapperWithPasswordUsesSudoS(t *testing.T) {
-	w := SudoWrapperFor("deploy", "hunter2")
-	got := w("apt-get update")
-	if !strings.Contains(got, "sudo -S") {
-		t.Errorf("password wrapper should use sudo -S, got %q", got)
+	for i, cmd := range exec.cmds {
+		if strings.Contains(cmd, secret) {
+			t.Errorf("password leaked onto command line %q", cmd)
+		}
+		if strings.Contains(cmd, "sudo") && exec.stdins[i] != secret+"\n" {
+			t.Errorf("privileged command %q sent stdin %q, want the password", cmd, exec.stdins[i])
+		}
 	}
-	if !strings.Contains(got, "hunter2") {
-		t.Errorf("password wrapper should supply the password, got %q", got)
+	if !slices.Contains(exec.stdins, secret+"\n") {
+		t.Errorf("no command received the password on stdin; commands: %v", exec.cmds)
 	}
 }
 
@@ -112,7 +122,7 @@ func TestProvisionCreatesAdminUserWhenMissing(t *testing.T) {
 		}
 		return "", nil
 	}}
-	p := Provisioner{Exec: exec, Sudo: func(c string) string { return "sudo " + c }, AdminUser: "bofh", ConnectUser: "root"}
+	p := Provisioner{Exec: exec, Escalate: sudoPrefix, AdminUser: "bofh", ConnectUser: "root"}
 
 	if err := p.Run([]string{"ssh-ed25519 KEY a@b"}); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -129,7 +139,7 @@ func TestProvisionSkipsAdminUserWhenPresent(t *testing.T) {
 		}
 		return "", nil
 	}}
-	p := Provisioner{Exec: exec, Sudo: func(c string) string { return "sudo " + c }, AdminUser: "bofh", ConnectUser: "root"}
+	p := Provisioner{Exec: exec, Escalate: sudoPrefix, AdminUser: "bofh", ConnectUser: "root"}
 
 	if err := p.Run([]string{"ssh-ed25519 KEY a@b"}); err != nil {
 		t.Fatalf("Run: %v", err)
